@@ -6,15 +6,11 @@ RL environment, ROS, graphics context, or dependency on WarpORacer.
 
 ## Run in Google Colab
 
-Upload `notebooks/colab_sensors.ipynb` using Colab's **File → Upload notebook**,
-then run all cells. The notebook embeds this source snapshot and creates its
-own project directory, so no GitHub repository or second ZIP upload is needed.
-A CPU runtime works. Select a GPU runtime to run CUDA tests if Warp detects it.
-The notebook installs pinned Warp 1.17.0, runs tests, and displays both sensors.
-Hosted Colab itself has not been exercised by the project authoring environment;
-its code cells are executed sequentially in Python as a validation step.
-A full Jupyter kernel cannot start in the authoring environment because local
-socket binding is restricted.
+[Open the notebook in Colab](https://colab.research.google.com/github/yuywe/WarpTracer/blob/sensor-prototype/racesense3d/notebooks/colab_sensors.ipynb)
+and run its three code cells: clone `sensor-prototype`, install the package, then
+run the geometry tests and sensor demo. Source stays in GitHub; the notebook
+contains no embedded archive. A CPU runtime works. Select a GPU runtime to run
+CUDA tests if Warp detects it. Hosted Colab execution remains unverified.
 
 ## Local use
 

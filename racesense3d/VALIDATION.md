@@ -8,9 +8,10 @@
   batched poses, 3D rigid transforms, floor/elevation conventions, nearest hit,
   two-sided triangles, near-range occlusion, half-open range limits, validation
   errors, device input buffers and output-buffer reuse.
-- All six code cells in `notebooks/colab_sensors.ipynb` executed successfully in
-  sequence in a shared Python namespace, including dependency setup, extracted
-  package tests, visualization, batched camera observations and source export.
+- The original embedded-source notebook's six code cells executed successfully
+  in sequence in a shared Python namespace. The current notebook has three code
+  cells and clones the GitHub branch instead; its cells pass syntax/structure
+  checks. The sensor source and tests are unchanged.
 - Both plots generated successfully; the sensor preview was visually inspected.
 - No NVIDIA driver was available. The CUDA parity test was skipped; CUDA kernels
   and performance have NOT been verified on a GPU in this environment.
