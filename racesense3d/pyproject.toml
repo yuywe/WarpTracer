@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "racesense3d"
+version = "0.1.0"
+description = "Standalone batched 3D LiDAR and depth-camera sensor prototype"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "warp-lang==1.17.0"]
+[project.optional-dependencies]
+dev = ["pytest>=8", "matplotlib>=3.7", "nbformat>=5", "nbclient>=0.10", "ipykernel>=6"]
+viz = ["matplotlib>=3.7"]
+[tool.setuptools.packages.find]
+where = ["src"]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
