@@ -7,20 +7,24 @@ RL environment, ROS, graphics context, or dependency on WarpORacer.
 ## Run in Google Colab
 
 [Open the notebook in Colab](https://colab.research.google.com/github/yuywe/WarpTracer/blob/sensor-prototype/racesense3d/notebooks/colab_sensors.ipynb)
-and run its three code cells: clone `sensor-prototype`, install the package, then
+and run its three code cells: clone `sensor-prototype`, sync the locked `uv` environment, then
 run the geometry tests and sensor demo. Source stays in GitHub; the notebook
-contains no embedded archive. A CPU runtime works. Select a GPU runtime to run
+contains no embedded archive. The initial `%pip install uv` only bootstraps the
+package manager; project dependencies are managed by `uv`. A CPU runtime works. Select a GPU runtime to run
 CUDA tests if Warp detects it. Hosted Colab execution remains unverified.
 
 ## Local use
 
-Python 3.10+:
+With `uv` installed, from the `racesense3d/` directory:
 
 ```bash
-python -m pip install -e '.[dev]'
-python -m pytest -q
-python examples/sensors.py sensor_preview.png
+uv sync --locked --extra dev
+uv run --locked --extra dev pytest -q
+uv run --locked --extra dev python examples/sensors.py sensor_preview.png
 ```
+
+The package has its own `uv.lock` and Python 3.12 default, separate from the
+root project's environment. Colab uses its current Python interpreter.
 
 ```python
 import numpy as np

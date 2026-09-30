@@ -12,9 +12,9 @@ geometry tests, and a self-contained Colab notebook. Vehicle physics is deferred
 
 ```bash
 cd racesense3d
-python -m pip install -e '.[dev]'
-python -m pytest -q
-python examples/sensors.py sensor_preview.png
+uv sync --locked --extra dev
+uv run --locked --extra dev pytest -q
+uv run --locked --extra dev python examples/sensors.py sensor_preview.png
 ```
 
 See [the package README](racesense3d/README.md) for the sensor API and coordinate
