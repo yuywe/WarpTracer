@@ -5,7 +5,7 @@ Warp 1.17.0, and Viser 1.0.26, using the existing root `uv.lock`.
 
 ## Automated behavior checks
 
-`uv run --locked --extra viz --extra dev pytest -q`: **12 passed, 2 skipped**.
+`uv run --locked --extra viz --extra dev pytest -q`: **23 passed, 3 skipped**.
 
 Driving checks cover support at rest, reset of body and controls, forward
 acceleration, braking to rest without appreciable reverse motion, coasting
@@ -14,7 +14,14 @@ propulsion, airborne behavior, invalid controls, and a wall collision under
 continued throttle. Existing free-fall, floor-contact, barrier-impact, and
 configuration checks also pass.
 
-CUDA drop and driving checks are included but skipped here because no NVIDIA
+LiDAR integration checks cover known wall distances, translated/yawed mounts,
+full body-plus-mount rotation, downward floor hits, minimum range filtering,
+upward misses, reset, borrowed-buffer reuse, independent scan/recording rates,
+and headless scan timing. Moving scans in each of the three driving scenarios
+match independent analytic box/floor intersections. Enabling LiDAR produces
+bit-identical body poses and velocities in the paired CPU turning check.
+
+CUDA drop, driving, and mounted-scan checks are included but skipped here because no NVIDIA
 driver is available. GPU behavior and performance remain unverified.
 
 ## Ten-second driving demonstrations
@@ -26,9 +33,16 @@ driver is available. GPU behavior and performance remain unverified.
 | S-turn | Peak speed 0.849 m/s; yaw rate changes sign; stopped by the end |
 
 All three trajectories remain inside their walls and export valid ten-second
-Viser recordings. Each recording contains exactly six boxes and no added meshes.
-The NPZ files contain 301 aligned pose, velocity, and control samples at 30 Hz.
-A five-second headless accelerate/brake run also completes successfully.
+Viser recordings. Each contains six boxes, one return point cloud, and one ray
+line batch. The static ray-casting mesh is not rendered. The NPZ files contain
+301 body samples and 301 LiDAR scans, each with 1080 beams, at the default 30 Hz.
+All returns in these enclosed, flat-ground demonstrations are valid.
+
+Decoded replay data contains correctly timed LiDAR geometry updates. HTML sizes
+are approximately 3.05 MB (accelerate/brake), 3.46 MB (circle), and 3.42 MB (S-turn).
+Every beam is saved; playback displays every sixth return and every 36th ray.
+A separate headless circle run completed, and automated checks confirm headless
+execution retains the initial/latest scans while sensing continues on schedule.
 
 Additional checks:
 
@@ -38,8 +52,10 @@ Additional checks:
   positions differing by less than 9 mm between the lowest and highest rate.
   This checks the default parameters, not arbitrary spring stiffnesses.
 - The notebook's code cells compile. Its exact Git setup sequence succeeds
-  twice in succession from both an older single-branch rigid-body clone and a
-  fresh vehicle-controls clone, using temporary local clones for this check.
+  twice in succession from single-branch rigidbody-prototype, vehicle-controls,
+  and vehicle-lidar clones, using temporary local clones for this check.
+- The four reused `src/racesense3d` library files match sensor-prototype commit
+  `51b2d1c8a4c4460d1b1828e5b0240ee287ba577d` byte-for-byte.
 - Actual hosted Colab execution and rendered browser playback have not been
   checked in this environment. Exported scene data was decoded and inspected.
 
@@ -54,5 +70,10 @@ is smoothed below 0.2 m/s to reduce suspension recoil near rest.
 This is a simple force model with illustrative parameters. It does not model
 wheel spin, calibrated tire slip curves, Ackermann geometry, reverse throttle,
 or tire support on uneven terrain. The speed helper is proportional and can
-have steady error under drag. Sensors, disparity extender, parallel environments,
-and PPO remain subsequent milestones.
+have steady error under drag.
+
+Only LiDAR is attached. Scans are instantaneous and noise-free; self returns
+from the host vehicle are excluded. The static sensor mesh mirrors the four
+walls and includes a floor patch extending beyond the enclosure by the sensing
+range. Moving obstacles and rotating-scan distortion are not modeled.
+Disparity extender, parallel environments, and PPO remain subsequent milestones.

@@ -1,16 +1,18 @@
-# WarpTracer — vehicle controls
+# WarpTracer — vehicle-mounted LiDAR
 
 A box car that accelerates, brakes, and steers on a flat surface with four walls.
-The `vehicle-controls` branch builds on the minimal `rigidbody-prototype` scene.
-Newton advances the rigid body; four invisible tire contact points apply forces.
-The scene still has **one moving body and six visible shapes**.
+The `vehicle-lidar` branch adds the existing sensor prototype's LiDAR to
+`vehicle-controls`. Newton advances the rigid body; four invisible tire contact
+points apply forces. There is still **one moving body and six solid scene shapes**,
+plus scan points and a sparse ray overlay. The same scripted commands drive the car;
+LiDAR is observing, with autonomous navigation coming later.
 
-[Open in Colab](https://colab.research.google.com/github/yuywe/WarpTracer/blob/vehicle-controls/notebooks/rigidbody_colab.ipynb)
+[Open in Colab](https://colab.research.google.com/github/yuywe/WarpTracer/blob/vehicle-lidar/notebooks/rigidbody_colab.ipynb)
 
 ## Run in Colab
 
 Run the three cells: setup, simulate, display. Setup reuses the earlier
-`/content/WarpTracer-rigidbody` clone, switches to `vehicle-controls`, and updates
+`/content/WarpTracer-rigidbody` clone, switches to `vehicle-lidar`, and updates
 it with a fast-forward pull. Colab's preinstalled `uv` uses **one environment at
 that repository root** and Colab's Python interpreter. Local edits that conflict
 with switching/pulling must be resolved; setup does not discard them.
@@ -21,7 +23,9 @@ scenarios. CPU works; CUDA is selected automatically when available. The first
 execution compiles Warp kernels.
 
 The replay has orbit/zoom controls and a timeline. It contains recorded motion;
-camera movement does not rerun physics or control the car.
+camera movement does not rerun physics or control the car. Yellow points are
+LiDAR returns and green lines are sampled laser rays. No sensor housing mesh is
+added: the ray origin shows the mounting position on the box.
 
 ## Run with uv
 
@@ -40,13 +44,80 @@ includes the viewer and recording, so playback needs no persistent Python server
 The earlier `drop` and `wall-impact` checks remain available, with four-second
 default durations. Options include `--seconds 10`, `--device cpu|cuda:0`,
 `--physics-hz 240`, `--record-fps 30`, `--output outputs`, and `--headless`.
-Driving requires at least 120 physics steps/s; recording frequency must divide
-physics frequency. Use the default 240 Hz for the supplied spring parameters.
+LiDAR is enabled by default; `--no-lidar` runs the vehicle-only demo and
+`--lidar-hz 30` sets scan frequency. Driving requires at least 120 physics steps/s;
+both pose recording frequency and LiDAR frequency must divide physics frequency.
+Use the default 240 Hz for the supplied spring parameters.
 
 Each run writes pose, velocity, and applied control arrays (`.npz`) and
-configuration/timing (`.json`). Recorded runs also write `.html`. Headless runs
-sample only the initial and final state, and use a `_headless` filename suffix.
+configuration/timing (`.json`). LiDAR arrays are included when enabled (details
+below). Recorded runs also write `.html`. Headless runs still compute LiDAR at
+its configured frequency, but copy only the initial and latest scan to the CPU,
+along with initial/final body states. They use a `_headless` filename suffix.
 Outputs are ignored by Git.
+
+## Vehicle-mounted LiDAR
+
+The four Python library files in `src/racesense3d/` are copied **unchanged** from
+[`sensor-prototype` commit 51b2d1c](https://github.com/yuywe/WarpTracer/tree/51b2d1c8a4c4460d1b1828e5b0240ee287ba577d/racesense3d/src/racesense3d).
+`warptracer/lidar.py` adapts that reusable ray caster to the vehicle and track.
+Both packages use the existing root uv project; there is no nested project or
+second environment. Only LiDAR is instantiated; camera code is not used.
+
+| Setting | Default |
+| --- | --- |
+| Beam layout | 1080 beams in one horizontal ring, -135° to +135°, ordered right to left |
+| Range | 0.021 m minimum, 30 m maximum |
+| Rate | 30 Hz, independently of pose recording rate |
+| Mount translation | 0.12 m forward, centered laterally, 0.025 m above the chassis top |
+| Mount orientation | Aligned with the chassis; follows its yaw, pitch, and roll |
+| Scanned surfaces | The same four wall boxes and floor as the physics scene |
+| Host vehicle | Excluded from the ray-casting mesh |
+| Replay | Every sixth return and every 36th ray; full-resolution scans are saved |
+
+The static sensor mesh is built once from `Track.barriers()`, so wall dimensions
+and positions match physics and playback. A floor patch extends beyond the walls
+by the maximum sensing range. This covers floor hits while the car is inside the
+enclosure. The added ray-casting mesh has 50 triangles and is never rendered.
+
+Each scan uses the composed **world-from-body × body-from-sensor** transform.
+The pose and ray-casting kernels run on the simulation device; sensing adds no
+forces or bodies. Scans are instantaneous snapshots, with no rotating-scan timing,
+noise, or dropout. A miss or filtered hit returns `far` with `valid=False`;
+too-near surfaces still occlude anything behind them.
+
+```python
+from warptracer.lidar import LidarConfig
+from warptracer.simulation import Simulation
+
+sim = Simulation(scenario="circle", lidar=LidarConfig(), device="cpu")
+trajectory = sim.run(duration=10)
+scans = trajectory.lidar
+print(scans.ranges.shape)   # (301, 1080): initial scan plus 30 scans/s
+points = scans.points(30)  # scan at 1 second, world XYZ; invalid returns are NaN
+```
+
+For manual stepping, `sim.lidar.result` exposes the existing `Scan` object and
+its device-resident `values`/`valid` buffers. `sim.lidar.timestamp` gives the latest
+scan time. Buffers are reused by the next scan; copy explicitly if retaining them.
+The controller sees the latest completed scan before the next physics step.
+`reset()` restores the car and immediately refreshes the time-zero scan.
+Python callers can omit `lidar` to run the original sensor-free simulation.
+
+NPZ data includes:
+
+| Array | Shape / meaning |
+| --- | --- |
+| `lidar_times` | `(scans,)`, seconds from reset |
+| `lidar_poses` | `(scans, 7)`, sensor world position + XYZW quaternion |
+| `lidar_ranges` | `(scans, beams)`, meters |
+| `lidar_valid` | `(scans, beams)`, boolean |
+| `lidar_directions` | `(beams, 3)`, unit rays in sensor coordinates |
+
+Use the LiDAR timestamps when pairing scans with vehicle poses: the rates can
+differ. A run ending between scan ticks keeps the last scheduled scan rather
+than inventing an extra sample. Replay holds each scan in world coordinates
+until the next scan, while pose frames follow their own timeline.
 
 ## Driving model
 
@@ -133,7 +204,6 @@ uv run --locked --extra viz --extra dev pytest -q
 See [VALIDATION.md](VALIDATION.md) for results and limits. Newton, Warp, and Viser
 remain pinned in the existing root `uv.lock`; no new dependencies are needed.
 
-Next: attach the LiDAR from the separate
-[`sensor-prototype` branch](https://github.com/yuywe/WarpTracer/tree/sensor-prototype),
-then use disparity extender to test autonomous driving. This branch does not run
-sensor verification, PPO, or other RL training.
+Next: connect disparity extender to these scans and the existing target-speed /
+steering interface. This branch runs the same scripted driving checks with LiDAR;
+it does not add a navigation controller or RL training.

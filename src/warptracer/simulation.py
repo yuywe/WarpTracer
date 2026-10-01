@@ -8,6 +8,7 @@ import warp as wp
 
 from .scene import Track, Vehicle, build_model
 from .driving import DRIVING_SCENARIOS, DriveConfig, apply_tire_forces, scripted_driver
+from .lidar import LidarRecording, MountedLidar
 
 
 @dataclass
@@ -17,12 +18,15 @@ class Trajectory:
     velocities: np.ndarray
     metadata: dict
     actions: np.ndarray  # applied throttle, brake, steering (rad), aligned with poses
+    lidar: LidarRecording | None = None
 
 
 class Simulation:
-    def __init__(self, track=None, vehicle=None, scenario="drop", device=None, physics_hz=240, drive=None):
+    def __init__(self, track=None, vehicle=None, scenario="drop", device=None, physics_hz=240, drive=None, lidar=None):
         if not isinstance(physics_hz, int) or physics_hz <= 0:
             raise ValueError("physics_hz must be a positive integer")
+        if lidar is not None and physics_hz % lidar.frequency:
+            raise ValueError("LiDAR frequency must divide physics_hz")
         self.driving = scenario in DRIVING_SCENARIOS
         default_track = Track(length=8, width=8) if scenario == "circle" else Track(length=12, width=6)
         self.track = track or (default_track if self.driving else Track())
@@ -41,6 +45,8 @@ class Simulation:
         self.control = self.model.control()
         self.state, self.next_state = self.model.state(), self.model.state()
         self.applied_controls = wp.zeros(1, dtype=wp.vec3, device=self.model.device)
+        self.lidar = MountedLidar(self.track, self.vehicle, lidar, self.model.device) if lidar is not None else None
+        self.lidar_stride = physics_hz // lidar.frequency if lidar is not None else 0
         self.reset()
 
     def reset(self):
@@ -53,6 +59,8 @@ class Simulation:
         self.command = (0.0, 0.0, 0.0)
         self.target_speed = -1.0
         self.applied_controls.zero_()
+        if self.lidar is not None:
+            self.lidar.update(self.state, self.body, 0.0)
 
     def set_action(self, throttle=0.0, brake=0.0, steering=0.0):
         """Forward throttle/brake in [0,1], steering in radians. Brake takes priority."""
@@ -86,6 +94,8 @@ class Simulation:
         self.solver.step(self.state, self.next_state, self.control, self.contacts, self.dt)
         self.state, self.next_state = self.next_state, self.state
         self.steps += 1
+        if self.lidar is not None and self.steps % self.lidar_stride == 0:
+            self.lidar.update(self.state, self.body, self.steps * self.dt)
 
     def snapshot(self):
         return self.state.body_q.numpy()[self.body].copy(), self.state.body_qd.numpy()[self.body].copy()
@@ -109,6 +119,15 @@ class Simulation:
         poses, velocities, actions = [], [], []
         controller = controller or scripted_driver
         times = []
+        scan_times, scan_poses, scan_ranges, scan_valid = [], [], [], []
+
+        def sample_lidar():
+            if self.lidar is not None and (not scan_times or self.lidar.timestamp > scan_times[-1]):
+                q, ranges, valid = self.lidar.snapshot()
+                scan_times.append(self.lidar.timestamp)
+                scan_poses.append(q)
+                scan_ranges.append(ranges)
+                scan_valid.append(valid)
 
         def sample():
             q, qd = self.snapshot()
@@ -118,16 +137,25 @@ class Simulation:
             actions.append(self.applied_controls.numpy()[0].copy())
 
         sample()
+        sample_lidar()
         start = time.perf_counter()
         for i in range(1, total_steps + 1):
             controller(self, self.steps * self.dt)
             self.step()
+            if record and self.lidar is not None and i % self.lidar_stride == 0:
+                sample_lidar()
             if record and i % stride == 0:
                 sample()
         wp.synchronize_device(self.model.device)
         elapsed = time.perf_counter() - start
         if times[-1] < total_steps * self.dt:
             sample()
+        sample_lidar()
+        lidar_recording = None
+        if self.lidar is not None:
+            lidar_recording = LidarRecording(np.asarray(scan_times), np.asarray(scan_poses),
+                                            np.asarray(scan_ranges), np.asarray(scan_valid),
+                                            self.lidar.rays.directions.copy())
         poses, velocities = np.asarray(poses), np.asarray(velocities)
         if not np.isfinite(poses).all() or not np.isfinite(velocities).all():
             raise RuntimeError("Simulation produced non-finite state")
@@ -139,8 +167,12 @@ class Simulation:
             "timing_includes_pose_recording": record,
             "track": asdict(self.track), "vehicle": asdict(self.vehicle),
             "drive": asdict(self.drive) if self.driving else None,
+            "lidar": ({**asdict(self.lidar.config), "mount_position": self.lidar.mount_position,
+                       "frame": "X forward, Y left, Z up", "pose_layout": "x,y,z,qx,qy,qz,qw",
+                       "invalid_range": self.lidar.config.far,
+                       "self_vehicle_excluded": True} if self.lidar is not None else None),
             "action_layout": "throttle,brake,steering_rad",
             "pose_layout": "x,y,z,qx,qy,qz,qw",
             "velocity_layout": "vx,vy,vz,wx,wy,wz",
         }
-        return Trajectory(np.asarray(times), poses, velocities, metadata, np.asarray(actions))
+        return Trajectory(np.asarray(times), poses, velocities, metadata, np.asarray(actions), lidar_recording)
