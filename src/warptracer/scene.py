@@ -47,10 +47,10 @@ class Vehicle:
         return self.length, self.width, self.height
 
 
-def build_model(track, vehicle, scenario="drop", device=None):
+def build_model(track, vehicle, scenario="drop", device=None, drive=None):
     """One free body; all track shapes are static and do not add dynamic bodies."""
-    if scenario not in ("drop", "wall-impact"):
-        raise ValueError("scenario must be 'drop' or 'wall-impact'")
+    if scenario not in ("drop", "wall-impact", "drive", "accelerate-brake", "circle", "s-turn"):
+        raise ValueError("Unknown scenario")
     wp.init()
     device = wp.get_device(device or ("cuda:0" if wp.is_cuda_available() else "cpu"))
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, -9.81))
@@ -66,11 +66,19 @@ def build_model(track, vehicle, scenario="drop", device=None):
         position = (0.0, 0.0, 0.55)
         rotation = wp.quat_rpy(0.18, -0.12, 0.08)
         velocity = (0.5, 0.0, 0.0, 0.0, 0.0, 0.0)
-    else:
+    elif scenario == "wall-impact":
         position = (0.0, -track.width / 2 + vehicle.width / 2 + 0.6, vehicle.height / 2 + 0.015)
         rotation = wp.quat_identity()
         # An initial sideways velocity, not an actuator or tire model.
         velocity = (0.0, -3.0, 0.0, 0.0, 0.0, 0.0)
+    else:
+        if drive is None:
+            raise ValueError("Driving scenarios require DriveConfig")
+        x = -track.length / 3 if scenario in ("accelerate-brake", "s-turn") else 0.0
+        y = -min(1.3, track.width / 4) if scenario == "circle" else 0.0
+        position = (x, y, drive.ride_height(vehicle))
+        rotation = wp.quat_identity()
+        velocity = (0.0,) * 6
     body = builder.add_body(xform=wp.transform(position, rotation), label="chassis")
     chassis_cfg = newton.ModelBuilder.ShapeConfig(
         density=float(vehicle.mass / np.prod(vehicle.dimensions)), mu=vehicle.friction, gap=0.005,

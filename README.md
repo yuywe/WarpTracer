@@ -1,21 +1,27 @@
-# WarpTracer — rigid-body playground
+# WarpTracer — vehicle controls
 
-One box car on a flat rectangular surface with four walls, simulated with Newton.
-The `rigidbody-prototype` branch is the next small experiment after the sensor
-prototype: gravity, floor contact, barrier contact, and interactive 3D playback.
+A box car that accelerates, brakes, and steers on a flat surface with four walls.
+The `vehicle-controls` branch builds on the minimal `rigidbody-prototype` scene.
+Newton advances the rigid body; four invisible tire contact points apply forces.
+The scene still has **one moving body and six visible shapes**.
 
-[Open in Colab](https://colab.research.google.com/github/yuywe/WarpTracer/blob/rigidbody-prototype/notebooks/rigidbody_colab.ipynb)
+[Open in Colab](https://colab.research.google.com/github/yuywe/WarpTracer/blob/vehicle-controls/notebooks/rigidbody_colab.ipynb)
 
 ## Run in Colab
 
-Run the notebook's three cells: clone or update/sync, simulate, display the replay.
-Colab's existing `uv` creates **one environment at the repository root**.
-The notebook uses Colab's Python interpreter. CPU works; a GPU runtime selects
-CUDA automatically when Warp detects it. First execution includes kernel compilation.
+Run the three cells: setup, simulate, display. Setup reuses the earlier
+`/content/WarpTracer-rigidbody` clone, switches to `vehicle-controls`, and updates
+it with a fast-forward pull. Colab's preinstalled `uv` uses **one environment at
+that repository root** and Colab's Python interpreter. Local edits that conflict
+with switching/pulling must be resolved; setup does not discard them.
 
-The embedded replay lets you orbit, zoom, pause, and scrub through time.
-The motion is recorded: moving the viewing camera does not affect the physics.
-The notebook runs the scene demo; it does not run the sensor verification suite.
+Choose `accelerate-brake`, `circle`, or `s-turn` in the second cell. Each driving
+recording lasts ten seconds by default. Rerun the last two cells after changing
+scenarios. CPU works; CUDA is selected automatically when available. The first
+execution compiles Warp kernels.
+
+The replay has orbit/zoom controls and a timeline. It contains recorded motion;
+camera movement does not rerun physics or control the car.
 
 ## Run with uv
 
@@ -23,85 +29,111 @@ From the repository root:
 
 ```bash
 uv sync --locked --extra viz
-uv run --locked --extra viz warptracer-demo
+uv run --locked --extra viz warptracer-demo --scenario accelerate-brake
+uv run --locked --extra viz warptracer-demo --scenario circle
+uv run --locked --extra viz warptracer-demo --scenario s-turn
 ```
 
-Open `outputs/drop.html` in a browser. The file includes the viewer and recording;
-no persistent Python server is needed for playback.
+Open the corresponding `outputs/<scenario>.html` in a browser. Each HTML file
+includes the viewer and recording, so playback needs no persistent Python server.
 
-Two experiments are included:
+The earlier `drop` and `wall-impact` checks remain available, with four-second
+default durations. Options include `--seconds 10`, `--device cpu|cuda:0`,
+`--physics-hz 240`, `--record-fps 30`, `--output outputs`, and `--headless`.
+Driving requires at least 120 physics steps/s; recording frequency must divide
+physics frequency. Use the default 240 Hz for the supplied spring parameters.
 
-```bash
-# A slightly tilted chassis falls, slides a little, and settles.
-uv run --locked --extra viz warptracer-demo --scenario drop
+Each run writes pose, velocity, and applied control arrays (`.npz`) and
+configuration/timing (`.json`). Recorded runs also write `.html`. Headless runs
+sample only the initial and final state, and use a `_headless` filename suffix.
+Outputs are ignored by Git.
 
-# An initial sideways velocity sends the chassis into the side wall.
-uv run --locked --extra viz warptracer-demo --scenario wall-impact
-
-# Run physics without the viewer or intermediate pose copies.
-uv run --locked warptracer-demo --headless --device cpu
-```
-
-Options: `--device cpu|cuda:0`, `--seconds 4`, `--physics-hz 240`,
-`--record-fps 30`, and `--output outputs`. The recording frequency must divide
-the physics frequency. `python main.py` is also available through `uv run`.
-
-Each run writes pose/velocity data (`.npz`) and configuration/timing (`.json`).
-Recorded runs additionally write `.html`. Headless artifacts use a `_headless`
-suffix so they do not overwrite a recorded run's data. Outputs are ignored by Git.
-
-## What is modeled
+## Driving model
 
 | Part | Representation |
 | --- | --- |
-| Ground | Static infinite collision plane; a finite ground patch is displayed |
-| Track | Flat rectangle, 6 × 4 m clear space inside the walls |
-| Walls | Four fixed boxes, 0.3 m high and 0.12 m thick |
-| Chassis | One free rigid box, 0.52 × 0.26 × 0.12 m, 3.2 kg |
-| Physics | Newton XPBD, 240 Hz, eight solver iterations, gravity and friction |
-| Playback | Viser/WebGL; geometry plus sampled transforms, 30 frames/s by default |
+| Car | One rigid box, 0.52 × 0.26 × 0.12 m, 3.2 kg |
+| Ground and walls | Static ground plane and four box walls; six total collision shapes including the car |
+| Tire contact points | Four mathematical points under the box; 0.32 m wheelbase, 0.22 m track width |
+| Support | Spring/damper forces against the flat floor, with no tensile force |
+| Acceleration/braking | Tangential forces; braking opposes motion and takes priority over throttle |
+| Steering | Front contact directions turn together; ±0.418 rad limit, 1.5 rad/s rate limit |
+| Grip | Longitudinal and lateral forces share a friction-circle limit based on each contact's support force |
+| Sideways motion | Linear slip-velocity damping capped by available grip |
+| Integration | Newton XPBD, 240 Hz, eight iterations; force calculations in a Warp kernel |
+| Playback | Viser, with sampled transforms at 30 frames/s |
 
-The scene has six shapes: the floor, four walls, and the car. Only the car moves.
-Physics and playback share the wall and car dimensions and transforms.
+Driving uses a 12 × 6 m clear area, or 8 × 8 m for the circle demo. The drop and
+impact checks keep their 6 × 4 m area. The support points hold the box about
+4.3 cm above the floor at rest. This small gap represents the unrendered tires;
+no wheel meshes, joints, or extra rigid bodies are added.
 
-Coordinates are meters with Z up, X forward, Y left. Saved poses use
-`x,y,z,qx,qy,qz,qw`; saved velocities use `vx,vy,vz,wx,wy,wz`.
-The playback adapter converts quaternions to Viser's WXYZ ordering.
+This is a deliberately simple **flat-ground** force model. Tire support uses an
+analytic z=0 plane, not terrain raycasts. Newton still handles chassis collisions
+with the ground and walls, including when the chassis bottoms out. Tires exert
+no force when out of reach of the floor or when the body is overturned. The
+model has no wheel spin, tire slip-ratio dynamics, Ackermann linkage, reverse
+throttle, or calibrated vehicle parameters. It is a foundation for driving and
+sensor integration, not a validated racing dynamics model.
 
-The car is a single box with gravity and contact; driving controls come later.
-Dimensions, mass, and friction are illustrative defaults, not measured vehicle data.
-
-## Change the scene
-
-The small public building blocks are `Track`, `Vehicle`, and `Simulation`:
+## Control the car
 
 ```python
-from warptracer.scene import Track, Vehicle
 from warptracer.simulation import Simulation
 
-sim = Simulation(
-    track=Track(length=8.0, width=4.0),
-    vehicle=Vehicle(mass=3.5),
-    scenario="drop",
-    device="cpu",
-)
-trajectory = sim.run(duration=4.0)
+sim = Simulation(scenario="drive", device="cpu")
+sim.set_action(throttle=0.4, brake=0.0, steering=0.15)
+for _ in range(240):
+    sim.step()  # advances one physics timestep; inputs persist
+
+sim.set_action(brake=1.0)  # brake without commanding reverse
+for _ in range(240):
+    sim.step()
 ```
 
-`src/warptracer/scene.py` builds geometry, `simulation.py` advances physics,
-and `playback.py` exports visualization. The physics module does not import Viser.
-Newton and Viser are pinned in `pyproject.toml`; the root `uv.lock` captures the
-resolved dependencies. The larger Newton example/RTX bundles are not required.
+Throttle and brake are clamped to [0, 1]; steering is in radians, positive left.
+A convenience controller accepts `sim.set_target_speed(1.0, steering=0.15)`.
+It calculates throttle/brake from forward-speed error on the simulation device.
+It is a proportional controller, so drag can leave a small steady speed error.
+A zero target applies the brake. This is the interface a later disparity-extender
+driver can use to request speed and steering.
 
-## Verification
+For a recorded run, provide a callback that sets controls each step:
+
+```python
+def driver(sim, time):
+    sim.set_action(throttle=0.5 if time < 1 else 0,
+                   brake=1.0 if time >= 1 else 0)
+
+trajectory = sim.run(duration=4, controller=driver)
+```
+
+`run()` starts from reset; it does not continue an earlier manual run. `reset()`
+clears controls and steering state. Without a callback, named driving scenarios
+use their scripted speed/steering requests; `drive` stays neutral. Headless
+physics makes no per-step state copies to the CPU. The Python loop still launches
+each physics step; parallel environments and CUDA graph capture are future work.
+
+`DriveConfig` in `driving.py` holds the force parameters, `Track` and `Vehicle`
+in `scene.py` hold dimensions/mass, `simulation.py` advances physics, and
+`playback.py` exports the viewer. Units are meters, kilograms, seconds, and radians.
+Coordinates are Z up, X forward, Y left. Saved poses are `x,y,z,qx,qy,qz,qw`,
+velocities are `vx,vy,vz,wx,wy,wz`, and applied controls are
+`throttle,brake,steering_rad`. The initial sample has zero applied controls;
+later samples store the controls used in the preceding physics step.
+Newton's world-frame force/torque convention is documented
+[here](https://newton-physics.github.io/newton/stable/concepts/conventions.html).
+
+## Verification and next milestone
 
 ```bash
-uv sync --locked --extra viz --extra dev
 uv run --locked --extra viz --extra dev pytest -q
 ```
 
-See [VALIDATION.md](VALIDATION.md) for measured behavior and verification limits.
-The existing `verify_raycasts.py` and `lidar_verification.png` are earlier
-repository experiments; this demo does not invoke them. The separate
-[`sensor-prototype` branch](https://github.com/yuywe/WarpTracer/tree/sensor-prototype)
-contains the sensor package and its notebook.
+See [VALIDATION.md](VALIDATION.md) for results and limits. Newton, Warp, and Viser
+remain pinned in the existing root `uv.lock`; no new dependencies are needed.
+
+Next: attach the LiDAR from the separate
+[`sensor-prototype` branch](https://github.com/yuywe/WarpTracer/tree/sensor-prototype),
+then use disparity extender to test autonomous driving. This branch does not run
+sensor verification, PPO, or other RL training.
