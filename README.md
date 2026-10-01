@@ -1,6 +1,6 @@
 # WarpTracer — rigid-body playground
 
-A flat oval track and a vehicle-shaped rigid body, simulated with Newton.
+One box car on a flat rectangular surface with four walls, simulated with Newton.
 The `rigidbody-prototype` branch is the next small experiment after the sensor
 prototype: gravity, floor contact, barrier contact, and interactive 3D playback.
 
@@ -8,7 +8,7 @@ prototype: gravity, floor contact, barrier contact, and interactive 3D playback.
 
 ## Run in Colab
 
-Run the notebook's three cells: clone/sync, simulate, display the replay.
+Run the notebook's three cells: clone or update/sync, simulate, display the replay.
 Colab's existing `uv` creates **one environment at the repository root**.
 The notebook uses Colab's Python interpreter. CPU works; a GPU runtime selects
 CUDA automatically when Warp detects it. First execution includes kernel compilation.
@@ -35,7 +35,7 @@ Two experiments are included:
 # A slightly tilted chassis falls, slides a little, and settles.
 uv run --locked --extra viz warptracer-demo --scenario drop
 
-# An initial sideways velocity sends the chassis into the outer barrier.
+# An initial sideways velocity sends the chassis into the side wall.
 uv run --locked --extra viz warptracer-demo --scenario wall-impact
 
 # Run physics without the viewer or intermediate pose copies.
@@ -55,23 +55,20 @@ suffix so they do not overwrite a recorded run's data. Outputs are ignored by Gi
 | Part | Representation |
 | --- | --- |
 | Ground | Static infinite collision plane; a finite ground patch is displayed |
-| Oval | 6 m straights, 2.5 m centerline bend radius, 1.6 m nominal lane width |
-| Barriers | Fixed box colliders, 0.3 m high and 0.12 m thick, with slightly overlapping segments |
+| Track | Flat rectangle, 6 × 4 m clear space inside the walls |
+| Walls | Four fixed boxes, 0.3 m high and 0.12 m thick |
 | Chassis | One free rigid box, 0.52 × 0.26 × 0.12 m, 3.2 kg |
-| Vehicle detail | Visual deck, front marker, and tire-like blocks attached to the chassis |
 | Physics | Newton XPBD, 240 Hz, eight solver iterations, gravity and friction |
 | Playback | Viser/WebGL; geometry plus sampled transforms, 30 frames/s by default |
 
-The boundary centerlines define the nominal lane width; barrier thickness reduces
-the clear driving width. Physics and playback use the same barrier dimensions
-and transforms. Colors and road markings are visual.
+The scene has six shapes: the floor, four walls, and the car. Only the car moves.
+Physics and playback share the wall and car dimensions and transforms.
 
 Coordinates are meters with Z up, X forward, Y left. Saved poses use
 `x,y,z,qx,qy,qz,qw`; saved velocities use `vx,vy,vz,wx,wy,wz`.
 The playback adapter converts quaternions to Viser's WXYZ ordering.
 
-This milestone uses the chassis box for contact. The tire-like blocks do not
-rotate, steer, or generate traction. The car is not driving around the oval yet.
+The car is a single box with gravity and contact; driving controls come later.
 Dimensions, mass, and friction are illustrative defaults, not measured vehicle data.
 
 ## Change the scene
@@ -83,7 +80,7 @@ from warptracer.scene import Track, Vehicle
 from warptracer.simulation import Simulation
 
 sim = Simulation(
-    track=Track(straight_length=8.0, lane_width=2.0),
+    track=Track(length=8.0, width=4.0),
     vehicle=Vehicle(mass=3.5),
     scenario="drop",
     device="cpu",

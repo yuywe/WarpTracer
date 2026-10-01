@@ -9,7 +9,7 @@ from .simulation import Simulation
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Oval track and free rigid chassis in Newton")
+    parser = argparse.ArgumentParser(description="Flat rectangle and one rigid box in Newton")
     parser.add_argument("--scenario", choices=("drop", "wall-impact"), default="drop")
     parser.add_argument("--device", default=None, help="cpu or cuda:0; default selects available CUDA")
     parser.add_argument("--seconds", type=float, default=4.0)
@@ -32,7 +32,7 @@ def main(argv=None):
     print(f"{trajectory.metadata['simulated_seconds']:.2f} simulated seconds; "
           f"{trajectory.metadata['elapsed_seconds']:.3f} s elapsed; "
           f"{trajectory.metadata['steps_per_second']:.0f} physics steps/s on {sim.model.device}.")
-    print("One rigid chassis; wheel/deck details are visual. No steering or tire model yet.")
+    print("One box chassis, one floor, four walls.")
 
 
 if __name__ == "__main__":

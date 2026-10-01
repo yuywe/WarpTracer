@@ -44,11 +44,11 @@ def test_tilted_chassis_settles_without_falling_through_floor():
     np.testing.assert_allclose(np.linalg.norm(trajectory.poses[:, 3:], axis=1), 1, atol=1e-5)
 
 
-def test_outer_barrier_stops_sideways_impact():
+def test_wall_stops_sideways_impact():
     sim = Simulation(device="cpu", scenario="wall-impact")
     trajectory = sim.run(duration=2)
     corners = world_corners(trajectory.poses, sim.vehicle.dimensions)
-    wall_face = -(sim.track.bend_radius + sim.track.lane_width / 2) + sim.track.barrier_thickness / 2
+    wall_face = -sim.track.width / 2
     # Require an actual approach to the wall, then no passage through it.
     assert corners[..., 1].min() < wall_face + .05
     assert corners[..., 1].min() >= wall_face - .015
@@ -57,7 +57,7 @@ def test_outer_barrier_stops_sideways_impact():
 
 def test_invalid_configuration_is_rejected():
     with pytest.raises(ValueError):
-        Track(bend_radius=.5, lane_width=2)
+        Track(width=0)
     with pytest.raises(ValueError):
         Vehicle(mass=0)
 
