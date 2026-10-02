@@ -11,7 +11,7 @@ uv run --locked python -m warptracer.benchmark --device cuda:0 --physics newton 
 
 Each command compares physics only, physics plus LiDAR, and physics plus LiDAR
 and host recording. The benchmark uses **one car**, four 240 Hz substeps per
-transition, **1080 rays at 60 Hz**, and host recording at 30 Hz. The demo uses
+transition, **108 rays at 60 Hz**, and host recording at 30 Hz. The demo uses
 30 Hz LiDAR, so its timing is a different workload. Compare batched simulators using aggregate environment transitions/s, the
 same sensor workload, and the number of environments. Physics substeps/s
 is a different unit.
@@ -70,3 +70,23 @@ separate from long headless trials because it retains samples in host memory.
 A speedup from eager execution to graphs measures execution overhead reduction
 within one physics model; comparing lean against Newton requires a separate
 Newton report on the same hardware.
+
+## Compare ray counts
+
+The default is now 108 rays, evenly spaced across the same 270° field of view
+(about 2.52° apart). Use `--lidar-beams 1080` to reproduce the earlier workload.
+The GPU figures in VALIDATION.md were measured with 1080 rays.
+
+```bash
+uv run --locked python -m warptracer.benchmark --device cuda:0 --backend both --lidar-beams 108 --cases physics lidar --seconds 1000 --output outputs/lidar-108.json
+uv run --locked python -m warptracer.benchmark --device cuda:0 --backend both --lidar-beams 1080 --cases physics lidar --seconds 1000 --output outputs/lidar-1080.json
+```
+
+Fewer rays reduce ray-casting work and scan storage, but fixed launch costs remain.
+The scan is coarser: ray spacing is roughly 22 cm at five meters, so narrow
+obstacles may fall between rays. Navigation quality still needs evaluation.
+
+Next candidates are batching independent cars, keeping controller inputs and
+outputs on the GPU, and combining the four lean physics substeps into one kernel
+launch. Reducing physics frequency or LiDAR frequency should follow driving and
+obstacle-detection checks, since those changes affect temporal behavior.

@@ -21,8 +21,8 @@ from .simulation import Simulation
 CASES = ("physics", "lidar", "recording")
 
 
-def make_runner(case, backend, device, substeps, engine="lean"):
-    lidar = None if case == "physics" else LidarConfig(frequency=240 // substeps)
+def make_runner(case, backend, device, substeps, engine="lean", beams=LidarConfig.beams):
+    lidar = None if case == "physics" else LidarConfig(beams=beams, frequency=240 // substeps)
     sim = Simulation(scenario="circle", device=device, lidar=lidar, engine=engine)
     return TransitionRunner(sim, backend=backend, substeps=substeps, controller="circle")
 
@@ -130,6 +130,7 @@ def main(argv=None):
     parser.add_argument("--warmup-seconds", type=float, default=2)
     parser.add_argument("--trials", type=int, default=5)
     parser.add_argument("--substeps", type=int, default=4, help="Even physics substeps per transition")
+    parser.add_argument("--lidar-beams", type=int, default=LidarConfig.beams, help="Rays per scan (default: 108)")
     parser.add_argument("--record-hz", type=int, default=30)
     parser.add_argument("--output", type=Path, default=Path("outputs/benchmark.json"))
     parser.add_argument("--profile", action="store_true", help="Save a separate eager CPU-call profile")
@@ -140,6 +141,8 @@ def main(argv=None):
         parser.error("Measured duration and warmup must be positive")
     if args.substeps < 2 or args.substeps % 2 or 240 % args.substeps:
         parser.error("substeps must be an even divisor of 240")
+    if args.lidar_beams < 1:
+        parser.error("lidar-beams must be positive")
     hz = 240 // args.substeps
     if args.record_hz <= 0 or hz % args.record_hz:
         parser.error("record-hz must be a positive divisor of transition frequency")
@@ -154,7 +157,7 @@ def main(argv=None):
     cases = list(dict.fromkeys(args.cases))
     print(f"Device: {device.name}; physics: {args.physics}; 1 car; {args.substeps} physics substeps/transition; "
           f"{hz} transitions per simulated second.", flush=True)
-    print(f"LiDAR cases: 1080 rays once per transition ({hz} Hz). "
+    print(f"LiDAR cases: {args.lidar_beams} rays once per transition ({hz} Hz). "
           f"{args.trials} trials, each after {warmup / hz:g} simulated seconds of warmup.", flush=True)
     if "graph" in backends and not device.is_cuda:
         print("CPU graph replay validates capture behavior; it is not a CUDA performance measurement.", flush=True)
@@ -162,9 +165,9 @@ def main(argv=None):
     validations = {}
     for case in cases:
         for backend in backends:
-            runners[(case, backend)] = make_runner(case, backend, device, args.substeps, args.physics)
+            runners[(case, backend)] = make_runner(case, backend, device, args.substeps, args.physics, args.lidar_beams)
         if "graph" in backends:
-            eager = runners.get((case, "eager")) or make_runner(case, "eager", device, args.substeps, args.physics)
+            eager = runners.get((case, "eager")) or make_runner(case, "eager", device, args.substeps, args.physics, args.lidar_beams)
             validate_pair(eager, runners[(case, "graph")], transitions=max(hz, 2))
             validations[case] = "passed"
             print(f"Eager/graph parity passed: {case}", flush=True)
@@ -186,7 +189,7 @@ def main(argv=None):
         "device": str(device), "device_name": device.name, "platform": platform.platform(),
         "python": platform.python_version(), "versions": {p: version(p) for p in ("warp-lang", "newton", "numpy")},
         "physics_engine": args.physics, "environments": 1, "physics_hz": 240, "substeps_per_transition": args.substeps,
-        "transition_hz": hz, "lidar_hz": hz, "lidar_beams": 1080,
+        "transition_hz": hz, "lidar_hz": hz, "lidar_beams": args.lidar_beams,
         "record_hz": args.record_hz, "transitions_per_trial": transitions,
         "simulated_seconds_per_trial": transitions / hz, "warmup_seconds": warmup / hz,
         "graph_validation": validations,
@@ -203,7 +206,7 @@ def main(argv=None):
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     if args.profile:
-        runner = runners.get(("lidar", "eager")) or make_runner("lidar", "eager", device, args.substeps, args.physics)
+        runner = runners.get(("lidar", "eager")) or make_runner("lidar", "eager", device, args.substeps, args.physics, args.lidar_beams)
         profile = cProfile.Profile()
         profile.runcall(trial, runner, "lidar", min(transitions, hz), warmup, args.record_hz)
         profile.dump_stats(str(args.output.with_suffix(".prof")))

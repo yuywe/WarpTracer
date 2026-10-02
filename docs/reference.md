@@ -12,14 +12,14 @@ second environment. Only LiDAR is instantiated; camera code is not used.
 
 | Setting | Default |
 | --- | --- |
-| Beam layout | 1080 beams in one horizontal ring, -135° to +135°, ordered right to left |
+| Beam layout | 108 beams in one horizontal ring, -135° to +135°, ordered right to left |
 | Range | 0.021 m minimum, 30 m maximum |
 | Rate | 30 Hz, independently of pose recording rate |
 | Mount translation | 0.12 m forward, centered laterally, 0.025 m above the chassis top |
 | Mount orientation | Aligned with the chassis; follows its yaw, pitch, and roll |
 | Scanned surfaces | The same four wall boxes and floor as the physics scene |
 | Host vehicle | Excluded from the ray-casting mesh |
-| Replay | Every sixth return and every 36th ray; full-resolution scans are saved |
+| Replay | Up to 180 returns and 30 ray lines; all beams are saved |
 
 The static sensor mesh is built once from `Track.barriers()`, so wall dimensions
 and positions match physics and playback. A floor patch extends beyond the walls
@@ -39,7 +39,7 @@ from warptracer.simulation import Simulation
 sim = Simulation(scenario="circle", engine="lean", lidar=LidarConfig(), device="cpu")
 trajectory = sim.run(duration=10)
 scans = trajectory.lidar
-print(scans.ranges.shape)   # (301, 1080): initial scan plus 30 scans/s
+print(scans.ranges.shape)   # (301, 108): initial scan plus 30 scans/s
 points = scans.points(30)  # scan at 1 second, world XYZ; invalid returns are NaN
 ```
 

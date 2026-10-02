@@ -56,6 +56,7 @@ Each lasts ten simulated seconds. Add options to the same command:
 | `--seconds 20` | Run for 20 simulated seconds |
 | `--device cpu` | Force CPU execution |
 | `--headless` | Skip HTML replay and intermediate recording |
+| `--lidar-beams 1080` | Restore dense scans (default: 108 rays) |
 | `--no-lidar` | Disable LiDAR |
 | `--physics newton` | Use the original Newton physics |
 
@@ -87,10 +88,10 @@ The command compares ordinary execution (`eager`) with captured graph replay
 host recording. Results are written to **`outputs/benchmark.json`**.
 
 **One transition = four physics substeps.** The benchmark runs one car at
-240 physics substeps per simulated second, with 1080 LiDAR rays at 60 Hz.
+240 physics substeps per simulated second, with 108 LiDAR rays at 60 Hz.
 The driving replay uses 30 Hz LiDAR. Compare matching workloads and units.
 
-In a user-supplied RTX 4060 Laptop GPU run, lean graph execution with LiDAR
+In a user-supplied RTX 4060 Laptop GPU run **using the previous 1080-ray setting**, lean graph execution with LiDAR
 reached **29,360 transitions/s** (117,442 physics substeps/s), a **6.7×**
 improvement over eager execution. All benchmark parity checks passed.
 See [validation results](VALIDATION.md) for timings and measurement limits.

@@ -12,7 +12,7 @@ from racesense3d import box, from_quads, lidar
 
 @dataclass(frozen=True)
 class LidarConfig:
-    beams: int = 1080
+    beams: int = 108
     fov_degrees: float = 270.0
     near: float = 0.021
     far: float = 30.0

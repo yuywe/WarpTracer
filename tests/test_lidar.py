@@ -87,12 +87,13 @@ def test_full_body_and_mount_rotation_composition():
 
 
 @pytest.mark.parametrize("scenario", ["accelerate-brake", "circle", "s-turn"])
-def test_moving_scans_match_analytic_geometry(scenario):
-    sim = Simulation(scenario=scenario, device="cpu", lidar=LidarConfig())
+@pytest.mark.parametrize("beams", [108, 1080])
+def test_moving_scans_match_analytic_geometry(scenario, beams):
+    sim = Simulation(scenario=scenario, device="cpu", lidar=LidarConfig(beams=beams))
     tr = sim.run(3)
     scans = tr.lidar
     np.testing.assert_array_equal(scans.times, tr.times)
-    assert scans.ranges.shape == (91, 1080)
+    assert scans.ranges.shape == (91, beams)
     for i in (0, 20, 50, 90):
         body_R = rotation_matrix(tr.poses[i, 3:])
         np.testing.assert_allclose(scans.poses[i, :3],

@@ -48,9 +48,9 @@ def save_html(trajectory, track, vehicle, path):
                 index = scan_events[t]
                 points = scans.points(index)
                 # Thin only the visualization; recordings retain every beam.
-                displayed = points[::6]
+                displayed = points[::max(1, (len(points) + 179) // 180)]
                 displayed = displayed[np.isfinite(displayed).all(axis=1)]
-                ends = points[::36]
+                ends = points[::max(1, (len(points) + 29) // 30)]
                 ends = ends[np.isfinite(ends).all(axis=1)]
                 origins = np.broadcast_to(scans.poses[index, :3], ends.shape)
                 returns.points = displayed.astype(np.float32)

@@ -18,13 +18,14 @@ def main(argv=None):
     parser.add_argument("--physics-hz", type=int, default=240)
     parser.add_argument("--record-fps", type=int, default=30)
     parser.add_argument("--no-lidar", action="store_true", help="Run the original vehicle-only scene")
+    parser.add_argument("--lidar-beams", type=int, default=LidarConfig.beams, help="Rays per scan (default: 108)")
     parser.add_argument("--lidar-hz", type=int, default=30, help="Scan rate, must divide physics Hz")
     parser.add_argument("--headless", action="store_true", help="Skip replay and intermediate CPU copies")
     parser.add_argument("--output", type=Path, default=Path("outputs"))
     args = parser.parse_args(argv)
     physics = "newton" if args.scenario in ("drop", "wall-impact") else args.physics
     sim = Simulation(engine=physics, scenario=args.scenario, device=args.device, physics_hz=args.physics_hz,
-                     lidar=None if args.no_lidar else LidarConfig(frequency=args.lidar_hz))
+                     lidar=None if args.no_lidar else LidarConfig(beams=args.lidar_beams, frequency=args.lidar_hz))
     duration = args.seconds if args.seconds is not None else (10.0 if sim.driving else 4.0)
     trajectory = sim.run(duration, args.record_fps, record=not args.headless)
     args.output.mkdir(parents=True, exist_ok=True)

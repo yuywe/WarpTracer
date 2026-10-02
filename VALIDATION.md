@@ -5,7 +5,14 @@ Warp 1.17.0, and Viser 1.0.26, using the unchanged root uv.lock.
 
 ## Behavior and capture checks
 
-`uv run --locked --extra viz --extra dev pytest -q`: **32 passed, 5 skipped**.
+`uv run --locked --extra viz --extra dev pytest -q`: **37 passed, 5 skipped**.
+
+The default scan is now 108 rays; both demo and benchmark accept
+`--lidar-beams 1080` for dense scans. Moving scans at both resolutions match
+analytic geometry, and benchmark tests verify selected resolution, eager/graph
+parity, recorded frame counts, and JSON metadata. A one-second 108-ray circle
+replay exported successfully with 31 scans and all returns valid. No new GPU
+performance measurement is claimed for 108 rays.
 
 The original Newton driving, free-body, and LiDAR tests still pass. New lean
 checks cover acceleration, braking without sustained reverse, fixed height,
@@ -61,7 +68,7 @@ This report compares eager and graph execution of lean physics. It contains
 no Newton timings, so it cannot establish lean-versus-Newton GPU speedup.
 Parallel-environment throughput remains unmeasured.
 
-## Single-car CPU benchmark
+## Single-car CPU benchmark (historical: 1080 rays)
 
 Both engines use the same scripted circle workload, four 240 Hz physics substeps
 per transition, 1080 rays at 60 Hz in sensing cases, and 30 Hz host recording.
@@ -82,11 +89,11 @@ Recording retains body/control/scan samples; it does not generate the viewer.
 
 Divide substeps/s by four for environment transitions/s.
 
-Reproduce the CPU measurements:
+Reproduce the historical CPU measurements:
 
 ```bash
-uv run --locked python -m warptracer.benchmark --device cpu --physics lean --backend both --seconds 60 --trials 3 --output outputs/lean-cpu.json
-uv run --locked python -m warptracer.benchmark --device cpu --physics newton --backend both --seconds 10 --trials 3 --output outputs/newton-cpu.json
+uv run --locked python -m warptracer.benchmark --device cpu --physics lean --backend both --lidar-beams 1080 --seconds 60 --trials 3 --output outputs/lean-cpu.json
+uv run --locked python -m warptracer.benchmark --device cpu --physics newton --backend both --lidar-beams 1080 --seconds 10 --trials 3 --output outputs/newton-cpu.json
 ```
 
 The physics-only lean graph trial is very short, so its rate is especially
@@ -94,7 +101,7 @@ sensitive to timer resolution and machine load. CPU results are indicative,
 not a GPU speed claim. JSON reports retain individual trials and timing spread.
 The original demo scans at 30 Hz; benchmark sensing is twice that rate.
 
-## Driving and playback
+## Driving and playback (historical: 1080 rays)
 
 All three ten-second lean driving demos export Viser HTML, trajectory NPZ, and
 metadata JSON. Each has 301 body samples and 301 mounted scans with 1080 beams
