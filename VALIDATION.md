@@ -5,7 +5,8 @@ Warp 1.17.0, and Viser 1.0.26, using the unchanged root uv.lock.
 
 ## Behavior and capture checks
 
-`uv run --locked --extra viz --extra dev pytest -q`: **49 passed, 14 skipped**.
+Full suite before the final recording check: **65 passed, 20 skipped**.
+The additional 40 Hz recording test and benchmark metadata checks pass separately.
 
 The default scan is now 108 rays; both demo and benchmark accept
 `--lidar-beams 1080` for dense scans. Moving scans at both resolutions match
@@ -26,12 +27,33 @@ LiDAR. Unsafe odd substep counts and inconsistent sensor schedules are rejected.
 The benchmark independently checks eager/graph poses, velocities, applied
 controls, scan poses, ranges, masks, and device step counts before timing.
 
-Fourteen CUDA tests were skipped in the local CPU-only environment. CPU graph replay
+Twenty CUDA tests were skipped in the local CPU-only environment. CPU graph replay
 uses Warp's CPU API capture. The user-supplied GPU benchmark below separately
 confirms lean CUDA graph/eager parity for its workload; it does not establish
 that the full CUDA test suite, the Newton CUDA backend, or the new fused/batched
 CUDA paths pass.
 No automatic fallback hides capture errors.
+
+## Disparity navigation
+
+CPU tests cover extension in both directions, overlapping disparities, unchanged
+raw scans, steering toward the open side, braking for blocked/invalid scans,
+approach braking, independent batch commands, controller reset, and parity across
+fused/unfused and eager/graph execution. Three differently positioned cars are
+compared against independent single-car controllers over ten simulated seconds,
+then repeated after reset. Navigation tests at 30, 40 and 60 Hz require movement
+and turns for 60 simulated seconds with zero wall-contact substeps.
+
+A 60-second, 60 Hz recorded demo traveled about 51.6 m, peaked at 1.28 m/s, and
+finished moving at 0.54 m/s with zero wall-contact substeps. It exported HTML,
+NPZ and JSON, with 3,601 scans; its XY trajectory and speed trace were inspected.
+The headless navigation benchmark completed with 1 and 64 independent cars on
+CPU and passed reference validation. New controller CUDA execution and its
+throughput still need to be checked on a GPU; CPU results do not establish those.
+
+The unmodified published simulation previously achieved 5.38 million aggregate
+transitions/s on the user's Tesla T4 with 256 cars and 108-ray LiDAR at 60 Hz.
+That report used scripted commands; it is not a disparity-controller measurement.
 
 ## Fusion, batches, and wall-clock warmup
 
@@ -171,5 +193,5 @@ Newton remains available for the earlier force/contact behavior.
 LiDAR is instantaneous and noise-free, using the unchanged sensor package.
 The host vehicle is excluded; static wall/floor geometry is shared with playback.
 Independent environments now share static geometry and run in batches.
-Moving obstacles, scan distortion, navigation, per-environment auto-reset,
+Moving obstacles, scan distortion, per-environment auto-reset,
 rewards, and PPO are not implemented.

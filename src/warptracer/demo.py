@@ -7,11 +7,15 @@ import numpy as np
 
 from .simulation import Simulation
 from .lidar import LidarConfig
+from .disparity import DisparityConfig
+from .execution import TransitionRunner
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Flat rectangle and one box car with mounted LiDAR")
-    parser.add_argument("--scenario", choices=("accelerate-brake", "circle", "s-turn", "drop", "wall-impact"), default="accelerate-brake")
+    parser.add_argument("--scenario", choices=("disparity", "accelerate-brake", "circle", "s-turn", "drop", "wall-impact"), default="accelerate-brake")
+    parser.add_argument("--backend", choices=("eager", "graph"), default="graph", help="Execution backend for disparity navigation")
+    parser.add_argument("--max-speed", type=float, default=1.5, help="Disparity target speed limit in m/s")
     parser.add_argument("--physics", choices=("lean", "newton"), default="lean")
     parser.add_argument("--device", default=None, help="cpu or cuda:0; default selects available CUDA")
     parser.add_argument("--seconds", type=float, default=None)
@@ -23,11 +27,22 @@ def main(argv=None):
     parser.add_argument("--headless", action="store_true", help="Skip replay and intermediate CPU copies")
     parser.add_argument("--output", type=Path, default=Path("outputs"))
     args = parser.parse_args(argv)
+    if args.scenario == "disparity" and args.no_lidar:
+        parser.error("Disparity navigation requires LiDAR")
     physics = "newton" if args.scenario in ("drop", "wall-impact") else args.physics
-    sim = Simulation(engine=physics, scenario=args.scenario, device=args.device, physics_hz=args.physics_hz,
+    sim = Simulation(engine=physics, scenario="drive" if args.scenario == "disparity" else args.scenario, device=args.device, physics_hz=args.physics_hz,
                      lidar=None if args.no_lidar else LidarConfig(beams=args.lidar_beams, frequency=args.lidar_hz))
     duration = args.seconds if args.seconds is not None else (10.0 if sim.driving else 4.0)
-    trajectory = sim.run(duration, args.record_fps, record=not args.headless)
+    runner = None
+    if args.scenario == "disparity":
+        runner = TransitionRunner(sim, controller="disparity", backend=args.backend,
+                                  integrator="fused" if physics == "lean" else "unfused",
+                                  substeps=sim.lidar_stride,
+                                  disparity_config=DisparityConfig(max_speed=args.max_speed))
+    trajectory = sim.run(duration, args.record_fps, record=not args.headless, runner=runner)
+    if runner is not None:
+        from dataclasses import asdict
+        trajectory.metadata["disparity"] = asdict(runner.navigator.config)
     args.output.mkdir(parents=True, exist_ok=True)
     stem = args.output / (args.scenario + ("_headless" if args.headless else ""))
     arrays = dict(times=trajectory.times, poses=trajectory.poses,
@@ -53,6 +68,8 @@ def main(argv=None):
         print(f"LiDAR: {scans.ranges.shape[1]} beams at {args.lidar_hz} Hz; "
               f"{len(scans.times)} saved scans; {100 * scans.valid.mean():.1f}% valid returns.")
     print(f"Physics: {sim.engine}; one box chassis, one floor, four walls.")
+    if runner is not None and physics == "lean":
+        print(f"Wall-contact substeps: {trajectory.metadata['wall_contact_substeps']}")
 
 
 if __name__ == "__main__":

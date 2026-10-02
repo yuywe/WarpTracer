@@ -85,6 +85,7 @@ def integrate_bicycle(
     motion: wp.array(dtype=wp.vec4), commands: wp.array(dtype=wp.vec4),
     controls: wp.array(dtype=wp.vec3), collision: wp.array(dtype=int),
     out_poses: wp.array(dtype=wp.transform), out_velocities: wp.array(dtype=wp.spatial_vector),
+    contact_counts: wp.array(dtype=int),
     dt: float, mass: float, length: float, width: float, wheelbase: float,
     friction: float, stiffness: float, drag: float, max_acceleration: float,
     max_braking: float, steering_rate: float, speed_gain: float,
@@ -99,6 +100,7 @@ def integrate_bicycle(
     controls[i] = control
     out_velocities[i] = velocity
     collision[i] = hit_wall
+    contact_counts[i] += hit_wall
 
 
 @wp.kernel
@@ -107,6 +109,7 @@ def integrate_bicycle_fused(
     motion: wp.array(dtype=wp.vec4), commands: wp.array(dtype=wp.vec4),
     controls: wp.array(dtype=wp.vec3), collision: wp.array(dtype=int),
     out_poses: wp.array(dtype=wp.transform), out_velocities: wp.array(dtype=wp.spatial_vector),
+    contact_counts: wp.array(dtype=int),
     dt: float, mass: float, length: float, width: float, wheelbase: float,
     friction: float, stiffness: float, drag: float, max_acceleration: float,
     max_braking: float, steering_rate: float, speed_gain: float,
@@ -120,13 +123,16 @@ def integrate_bicycle_fused(
     command = commands[i]
     velocity = wp.spatial_vector()
     hit_wall = int(0)
+    contacts = int(0)
     # Sequential integration stays local to this car; the physics dt is unchanged.
     for _ in range(substeps):
         pose, state, control, velocity, hit_wall = bicycle_step(
             pose, state, command, control,
             dt, mass, length, width, wheelbase, friction, stiffness, drag, max_acceleration, max_braking, steering_rate, speed_gain, track_length, track_width)
+        contacts += hit_wall
     out_poses[i] = pose
     motion[i] = state
     controls[i] = control
     out_velocities[i] = velocity
     collision[i] = hit_wall
+    contact_counts[i] += contacts

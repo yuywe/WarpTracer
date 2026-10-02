@@ -67,10 +67,17 @@ class Simulation:
             self.state, self.next_state = LeanState(chosen_device, num_envs), LeanState(chosen_device, num_envs)
             x = -self.track.length / 3 if scenario in ("accelerate-brake", "s-turn") else 0.0
             y = -min(1.3, self.track.width / 4) if scenario == "circle" else 0.0
+            # Keep the full chassis inside small enclosures, with clearance so
+            # the first stationary step does not count as a wall contact.
+            limit_x = (self.track.length - self.vehicle.length) / 2
+            limit_y = (self.track.width - self.vehicle.width) / 2
+            x = float(np.clip(x, -0.99 * limit_x, 0.99 * limit_x))
+            y = float(np.clip(y, -0.99 * limit_y, 0.99 * limit_y))
             self.initial_pose = np.array([[x, y, self.drive.ride_height(self.vehicle), 0, 0, 0, 1]], dtype=np.float32)
             self.initial_pose = np.repeat(self.initial_pose, num_envs, axis=0)
             self.lean_motion = wp.zeros(num_envs, dtype=wp.vec4, device=chosen_device)
             self.collision = wp.zeros(num_envs, dtype=int, device=chosen_device)
+            self.wall_contact_substeps = wp.zeros(num_envs, dtype=int, device=chosen_device)
         self.device_commands = wp.zeros(num_envs, dtype=wp.vec4, device=self.model.device)
         self._uploaded_command = None
         self.applied_controls = wp.zeros(num_envs, dtype=wp.vec3, device=self.model.device)
@@ -91,6 +98,7 @@ class Simulation:
                 state.body_qd.zero_()
             self.lean_motion.zero_()
             self.collision.zero_()
+            self.wall_contact_substeps.zero_()
         self.steps = 0
         self.command = (0.0, 0.0, 0.0)
         self.target_speed = -1.0
@@ -154,6 +162,7 @@ class Simulation:
         return [
             self.state.body_q, self.lean_motion, self.device_commands,
             self.applied_controls, self.collision, self.next_state.body_q, self.next_state.body_qd,
+            self.wall_contact_substeps,
             self.dt, v.mass, v.length, v.width, d.wheelbase, v.friction, d.lateral_stiffness,
             d.rolling_drag, d.max_acceleration, d.max_braking, d.steering_rate, d.speed_gain,
             self.track.length, self.track.width,
@@ -199,8 +208,8 @@ class Simulation:
             return q[self.body].copy(), qd[self.body].copy()
         return q.copy(), qd.copy()
 
-    def run(self, duration=4.0, record_fps=30, record=True, controller=None):
-        """Run from reset. Optional controller(sim, time) sets inputs before each step."""
+    def run(self, duration=4.0, record_fps=30, record=True, controller=None, runner=None):
+        """Record from reset using a callback per physics step or a TransitionRunner."""
         if self.num_envs != 1:
             raise ValueError("Recorded run() supports one car; use TransitionRunner for batches")
         if not np.isfinite(duration) or duration <= 0:
@@ -211,12 +220,20 @@ class Simulation:
         if total_steps < 1:
             raise ValueError("duration is shorter than one physics step")
         stride = self.physics_hz // record_fps
+        if runner is not None:
+            if runner.sim is not self or controller is not None:
+                raise ValueError("Runner must own this simulation and cannot be combined with a callback controller")
+            if total_steps % runner.substeps or (record and stride % runner.substeps):
+                raise ValueError("Duration and recording intervals must span whole transitions")
+        advance = self.step if runner is None else runner.advance
+        reset = self.reset if runner is None else runner.reset
+        step_size = 1 if runner is None else runner.substeps
         # Compile/warm up outside the measurement, then restore the initial state.
-        self.reset()
+        reset()
         for _ in range(2):
-            self.step()
+            advance()
         wp.synchronize_device(self.model.device)
-        self.reset()
+        reset()
         poses, velocities, actions = [], [], []
         controller = controller or scripted_driver
         times = []
@@ -240,9 +257,10 @@ class Simulation:
         sample()
         sample_lidar()
         start = time.perf_counter()
-        for i in range(1, total_steps + 1):
-            controller(self, self.steps * self.dt)
-            self.step()
+        for i in range(step_size, total_steps + 1, step_size):
+            if runner is None:
+                controller(self, self.steps * self.dt)
+            advance()
             if record and self.lidar is not None and i % self.lidar_stride == 0:
                 sample_lidar()
             if record and i % stride == 0:
@@ -273,6 +291,10 @@ class Simulation:
                        "invalid_range": self.lidar.config.far,
                        "self_vehicle_excluded": True} if self.lidar is not None else None),
             "action_layout": "throttle,brake,steering_rad",
+            "controller": runner.controller if runner is not None else "callback",
+            "backend": runner.backend if runner is not None else "eager",
+            "integrator": runner.integrator if runner is not None else "unfused",
+            "wall_contact_substeps": int(self.wall_contact_substeps.numpy()[0]) if self.engine == "lean" else None,
             "pose_layout": "x,y,z,qx,qy,qz,qw",
             "velocity_layout": "vx,vy,vz,wx,wy,wz",
         }

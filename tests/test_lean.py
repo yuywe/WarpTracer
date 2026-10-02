@@ -81,3 +81,15 @@ def test_wall_stops_chassis_and_keeps_rotated_footprint_inside():
 def test_lean_rejects_free_body_scenarios():
     with pytest.raises(ValueError):
         Simulation(scenario="drop", engine="lean", device="cpu")
+
+
+@pytest.mark.parametrize("scenario", ["accelerate-brake", "s-turn", "circle"])
+def test_small_track_spawn_is_inside_and_stationary(scenario):
+    sim = Simulation(track=Track(length=1, width=1), scenario=scenario,
+                     engine="lean", device="cpu", num_envs=3)
+    initial, _ = sim.snapshot()
+    assert np.all(np.abs(initial[:, 0]) + sim.vehicle.length / 2 < .5)
+    assert np.all(np.abs(initial[:, 1]) + sim.vehicle.width / 2 < .5)
+    sim.step()
+    np.testing.assert_array_equal(sim.snapshot()[0], initial)
+    np.testing.assert_array_equal(sim.collision.numpy(), 0)

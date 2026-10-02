@@ -57,12 +57,14 @@ def test_batch_matches_independent_cars_with_controls_collision_and_reset(device
                 np.testing.assert_allclose(batch.sim.applied_controls.numpy()[i],
                                            single.sim.applied_controls.numpy()[0], atol=2e-4)
                 assert batch.sim.collision.numpy()[i] == single.sim.collision.numpy()[0]
+                assert batch.sim.wall_contact_substeps.numpy()[i] == single.sim.wall_contact_substeps.numpy()[0]
         assert batch.sim.steps == 240 * substeps
         assert batch.sim.lidar.timestamp == pytest.approx(substeps)
         assert not np.allclose(q[0], q[1])
         # First car reached the +X wall, then stayed stopped under braking.
         assert q[0, 0] == pytest.approx(1.74, abs=.001)
         assert np.linalg.norm(v[0]) < .01
+        assert batch.sim.wall_contact_substeps.numpy()[0] > 0
         batch.sim.set_action(brake=1)  # scalar inputs broadcast after distinct commands
         batch.advance()
         np.testing.assert_allclose(batch.sim.applied_controls.numpy()[:, :2], [[0, 1]] * 3)
@@ -76,6 +78,13 @@ def test_wall_clock_warmup_resets_clock_state_and_scans():
     assert r.sim.steps == 0 and r.clock.numpy()[0] == 0
     assert r.sim.lidar.timestamp == 0
     np.testing.assert_array_equal(r.sim.snapshot()[0], before)
+
+
+def test_warmup_completes_submission_chunks():
+    r = runner(1, "fused", "graph", 4, "cpu")
+    count, _ = warm_up(r, 10, 0, transitions_per_chunk=7)
+    assert count == 14
+    assert r.sim.steps == 0 and r.clock.numpy()[0] == 0
 
 
 def test_sweep_units_and_40hz_headless(tmp_path):

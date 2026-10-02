@@ -5,9 +5,8 @@ vehicle-mounted LiDAR**. The car can accelerate, brake, and steer. Viser exports
 an interactive replay that you can orbit, pause, and scrub.
 
 This branch is `performance-prototype`. Driving uses a lightweight Warp model;
-Newton is also available. The car currently follows scripted commands.
-Batched independent cars are available for benchmarking. Autonomous navigation
-is the next milestone.
+Newton is also available. Drive with scripted commands or a reactive LiDAR
+disparity extender. Independent cars can run in batches on the same static track.
 
 ## Run locally
 
@@ -46,6 +45,7 @@ Replace `accelerate-brake` in the command above:
 
 | Scenario | What the car does |
 | --- | --- |
+| `disparity` | Chooses steering and speed from LiDAR; turns away from walls |
 | `accelerate-brake` | Accelerates straight, then stops |
 | `circle` | Drives with constant left steering |
 | `s-turn` | Alternates left and right steering, then stops |
@@ -66,12 +66,25 @@ grip limits, and stopping at walls. Height is fixed; suspension, roll/pitch, and
 uneven terrain are not modeled. The `drop` and `wall-impact` scenarios always use
 Newton.
 
+Try autonomous navigation and open **`outputs/disparity.html`**:
+
+```bash
+uv run --locked --extra viz warptracer-demo --scenario disparity --seconds 30 --lidar-hz 60
+```
+
+This uses a 1.5 m/s target-speed limit, slows for turns and obstacles, and reports
+wall-contact substeps. It needs LiDAR; `--max-speed` adjusts its speed limit.
+See [navigation behavior and limits](docs/navigation.md). The scene still has
+only the box chassis, floor, four walls, and LiDAR display.
+
 ## Run in Colab
 
 Open the [driving notebook](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/rigidbody_colab.ipynb)
 and run its three code cells: **setup → simulate → display**.
 Change the scenario in the second cell to try another drive.
 Setup reuses the same clone and repository-root uv environment.
+The notebook defaults to disparity navigation and `cuda:0`; select a GPU runtime
+or explicitly change `device` to `"cpu"`. Output is streamed into the cell.
 
 ## Measure performance
 
@@ -103,6 +116,12 @@ uv run --locked python -m warptracer.benchmark --device cuda:0 --backend graph -
 advances of the whole batch. Each car has its own state and scan, sharing the
 same static track geometry. See the [benchmark guide](docs/benchmarking.md)
 for 40 Hz sensing, timing interpretation, and the Python API.
+
+Include the LiDAR controller in a headless benchmark:
+
+```bash
+uv run --locked python -m warptracer.benchmark --device cuda:0 --backend graph --integrator fused --envs 1 64 256 --cases navigation --seconds 100 --output outputs/navigation.json
+```
 
 ## Further details
 

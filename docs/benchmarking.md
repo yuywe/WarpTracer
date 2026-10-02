@@ -67,7 +67,10 @@ higher overall throughput.
 
 Before **each trial**, the runner executes until both minima are satisfied:
 `--warmup-wall-seconds 2` real seconds and `--warmup-seconds 2` simulated seconds.
-Work is submitted in chunks of 32 transitions and synchronized between chunks.
+Work is submitted in chunks containing a full trial's transition count and
+synchronized between chunks, matching headless measurement submission. Both
+minima are checked after each chunk, so warmup can exceed the requested duration
+by a full chunk. Warmup exercises physics/sensing without host recording copies.
 The report saves actual warmup duration and count. Reset and synchronization
 follow warmup, outside the timed region. Longer warmup may help exercise the GPU,
 but does not guarantee stable clocks or explain earlier timing variation.
@@ -78,10 +81,13 @@ scan poses, ranges, masks, and device step counts must agree within tolerance.
 The reference uses the same batch size; separate tests compare batch entries
 against independent single-car simulations.
 
-Measured time includes stepping, sensing, and optional host recording. It excludes
+Measured time includes Python submission, GPU waiting, stepping, sensing, and
+optional host recording. Throughput is end-to-end, not pure GPU kernel throughput. It excludes
 construction, compilation, warmup, reset, parity validation, HTML export, and
 disk writes. Cases are `physics`, `lidar`, and `recording`; omit `--cases` to
-run all three. Recording copies and retains all cars' states/scans at the
+run all three. Add `--cases navigation` to measure disparity control plus physics
+and LiDAR; this case uses live scan feedback instead of scripted circle commands.
+Recording copies and retains all cars' states/scans at the
 recording rate, so use headless cases for large, long-running batch sweeps.
 
 Reports use schema version 2. Each result carries environment count, integrator,

@@ -90,6 +90,9 @@ Terrain height/tilt can be added separately later. Newton still provides the
 earlier free-body checks. The fixed lean height uses the original nominal ride
 height; spring/damper and track-width parameters otherwise do not affect lean
 dynamics. The lean collision flag describes the latest substep.
+`wall_contact_substeps` accumulates every contacting substep, including inside
+fused transitions, and clears on reset. It counts contact duration in substeps,
+not distinct collisions. See [LiDAR navigation](navigation.md) for the controller.
 
 Python's `Simulation` keeps `engine="newton"` as its default for compatibility.
 Pass `engine="lean"` explicitly. Driving CLI demos default to lean.

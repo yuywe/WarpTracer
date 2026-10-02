@@ -1,6 +1,7 @@
 """Repeatable single/batched-car throughput measurements; run with python -m warptracer.benchmark."""
 import argparse
 import cProfile
+from dataclasses import asdict
 import io
 import json
 from pathlib import Path
@@ -18,13 +19,14 @@ from .lidar import LidarConfig
 from .simulation import Simulation
 
 
-CASES = ("physics", "lidar", "recording")
+CASES = ("physics", "lidar", "recording", "navigation")
 
 
 def make_runner(case, backend, device, substeps, engine="lean", beams=LidarConfig.beams, num_envs=1, integrator="unfused"):
     lidar = None if case == "physics" else LidarConfig(beams=beams, frequency=240 // substeps)
     sim = Simulation(scenario="circle", device=device, lidar=lidar, engine=engine, num_envs=num_envs)
-    return TransitionRunner(sim, backend=backend, substeps=substeps, controller="circle", integrator=integrator)
+    return TransitionRunner(sim, backend=backend, substeps=substeps,
+                            controller="disparity" if case == "navigation" else "circle", integrator=integrator)
 
 
 def validate_pair(eager, graph, transitions=90):
@@ -39,7 +41,11 @@ def validate_pair(eager, graph, transitions=90):
         q, qd = sim.snapshot()
         result = [q, qd, sim.applied_controls.numpy().copy()]
         if sim.engine == "lean":
-            result.extend([sim.lean_motion.numpy().copy(), sim.collision.numpy().copy()])
+            result.extend([sim.lean_motion.numpy().copy(), sim.collision.numpy().copy(),
+                           sim.wall_contact_substeps.numpy().copy()])
+        if runner.navigator is not None:
+            result.extend([runner.navigator.filtered.numpy().copy(), runner.navigator.goals.numpy().copy(),
+                           runner.navigator.turns.numpy().copy(), sim.device_commands.numpy().copy()])
         if sim.lidar is not None:
             pose, values, valid = sim.lidar.snapshot()
             result.extend([pose, values, valid])
@@ -54,16 +60,19 @@ def validate_pair(eager, graph, transitions=90):
     graph.reset()
 
 
-def warm_up(runner, min_transitions, min_wall_seconds):
+def warm_up(runner, min_transitions, min_wall_seconds, transitions_per_chunk=None):
     """Run actual work until both simulated-step and wall-clock minima are met."""
     runner.reset()
     wp.synchronize_device(runner.sim.model.device)
     start = time.perf_counter()
     count = 0
+    chunk = min_transitions if transitions_per_chunk is None else transitions_per_chunk
+    if chunk < 1:
+        raise ValueError("Warmup chunk must contain at least one transition")
     while count < min_transitions or time.perf_counter() - start < min_wall_seconds:
-        for _ in range(32):
+        for _ in range(chunk):
             runner.advance()
-        count += 32
+        count += chunk
         wp.synchronize_device(runner.sim.model.device)
     elapsed = time.perf_counter() - start
     runner.reset()
@@ -75,7 +84,8 @@ def trial(runner, case, transitions, warmup, record_hz, warmup_wall_seconds=2.0)
     sim = runner.sim
     transition_hz = sim.physics_hz // runner.substeps
     record_stride = transition_hz // record_hz
-    warmup_count, warmup_elapsed = warm_up(runner, warmup, warmup_wall_seconds)
+    warmup_count, warmup_elapsed = warm_up(runner, warmup, warmup_wall_seconds,
+                                          transitions_per_chunk=transitions)
     records = []
 
     def sample():
@@ -124,6 +134,7 @@ def trial(runner, case, transitions, warmup, record_hz, warmup_wall_seconds=2.0)
         "simulated_seconds_per_second": transitions * runner.substeps * sim.dt / elapsed,
         "recorded_frames": len(records),
         "checked_environments": sim.num_envs,
+        "wall_contact_substeps": sim.wall_contact_substeps.numpy().tolist() if sim.engine == "lean" else None,
         "final_pose": (q if sim.num_envs == 1 else q[0]).tolist(),
         "final_velocity": (qd if sim.num_envs == 1 else qd[0]).tolist(),
     }
@@ -153,7 +164,7 @@ def main(argv=None):
     parser.add_argument("--integrator", choices=("auto", "unfused", "fused", "both"), default="auto",
                         help="Default: fused for lean, unfused for Newton")
     parser.add_argument("--envs", nargs="+", type=int, default=[1], help="Independent car counts to sweep")
-    parser.add_argument("--cases", nargs="+", choices=CASES, default=list(CASES))
+    parser.add_argument("--cases", nargs="+", choices=CASES, default=["physics", "lidar", "recording"])
     parser.add_argument("--seconds", type=float, default=10, help="Simulated seconds per car per trial")
     parser.add_argument("--warmup-seconds", type=float, default=2, help="Minimum simulated warmup seconds")
     parser.add_argument("--warmup-wall-seconds", type=float, default=2,
@@ -240,7 +251,8 @@ def main(argv=None):
         "simulated_seconds_per_trial": transitions / hz, "warmup_seconds": warmup / hz,
         "minimum_warmup_wall_seconds": args.warmup_wall_seconds,
         "validation": validations,
-        "timing_scope": "Stepping, sensors, and optional host recording; excludes setup, warmup, reset, validation, HTML and disk writes",
+        "warmup_chunk_transitions": transitions,
+        "timing_scope": "End-to-end Python submission, GPU waiting, stepping, sensors, and optional host recording; excludes setup, warmup, reset, validation, HTML and disk writes",
         "throughput_units": "environment transitions/s and physics substeps/s aggregate all cars; batch transitions/s counts runner advances",
         "final_state_scope": "All cars checked finite; final_pose/final_velocity contain car zero only",
         "results": [],
@@ -249,6 +261,8 @@ def main(argv=None):
         count, case, integrator, backend = key
         summary = summarize(samples[key], transitions, args.substeps, count)
         report["results"].append({"environments": count, "case": case, "integrator": integrator,
+                                  "controller": runners[key].controller,
+                                  "controller_config": asdict(runners[key].navigator.config) if runners[key].navigator else None,
                                   "backend": backend, "graph_kind": runners[key].graph_kind,
                                   "summary": summary, "trials": samples[key]})
         print(f"MEDIAN N={count} {case} {integrator}/{backend}: "
