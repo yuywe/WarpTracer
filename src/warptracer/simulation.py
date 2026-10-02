@@ -1,14 +1,15 @@
-"""Fixed-step Newton physics, independent of display and recording libraries."""
+"""Fixed-step lean/Newton physics, independent of display and recording libraries."""
 from dataclasses import asdict, dataclass
 import time
+from types import SimpleNamespace
 
-import newton
 import numpy as np
 import warp as wp
 
 from .scene import Track, Vehicle, build_model
-from .driving import DRIVING_SCENARIOS, DriveConfig, apply_tire_forces, scripted_driver
+from .driving import DRIVING_SCENARIOS, DriveConfig, apply_tire_forces, scripted_driver, write_command
 from .lidar import LidarRecording, MountedLidar
+from .lean import LeanState, integrate_bicycle
 
 
 @dataclass
@@ -22,11 +23,16 @@ class Trajectory:
 
 
 class Simulation:
-    def __init__(self, track=None, vehicle=None, scenario="drop", device=None, physics_hz=240, drive=None, lidar=None):
+    def __init__(self, track=None, vehicle=None, scenario="drop", device=None, physics_hz=240, drive=None, lidar=None, engine="newton"):
         if not isinstance(physics_hz, int) or physics_hz <= 0:
             raise ValueError("physics_hz must be a positive integer")
         if lidar is not None and physics_hz % lidar.frequency:
             raise ValueError("LiDAR frequency must divide physics_hz")
+        if engine not in ("newton", "lean"):
+            raise ValueError("engine must be newton or lean")
+        if engine == "lean" and scenario not in DRIVING_SCENARIOS:
+            raise ValueError("Lean physics supports driving scenarios; drop/impact need Newton")
+        self.engine = engine
         self.driving = scenario in DRIVING_SCENARIOS
         default_track = Track(length=8, width=8) if scenario == "circle" else Track(length=12, width=6)
         self.track = track or (default_track if self.driving else Track())
@@ -38,27 +44,53 @@ class Simulation:
                 raise ValueError("Driving support springs require physics_hz >= 120")
         self.scenario, self.physics_hz = scenario, physics_hz
         self.dt = 1.0 / physics_hz
-        self.model, self.body, self.initial_velocity = build_model(self.track, self.vehicle, scenario, device, self.drive)
-        self.solver = newton.solvers.SolverXPBD(self.model, iterations=8, angular_damping=0.05)
-        self.pipeline = newton.CollisionPipeline(self.model)
-        self.contacts = self.pipeline.contacts()
-        self.control = self.model.control()
-        self.state, self.next_state = self.model.state(), self.model.state()
+        if engine == "newton":
+            import newton
+            self.model, self.body, self.initial_velocity = build_model(self.track, self.vehicle, scenario, device, self.drive)
+            self.solver = newton.solvers.SolverXPBD(self.model, iterations=8, angular_damping=0.05)
+            self.pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.pipeline.contacts()
+            self.control = self.model.control()
+            self.state, self.next_state = self.model.state(), self.model.state()
+        else:
+            wp.init()
+            chosen_device = wp.get_device(device or ("cuda:0" if wp.is_cuda_available() else "cpu"))
+            if min(self.track.length, self.track.width) <= np.hypot(self.vehicle.length, self.vehicle.width):
+                raise ValueError("Lean enclosure must accommodate the car at all headings")
+            self.model = SimpleNamespace(device=chosen_device)
+            self.body = 0
+            self.state, self.next_state = LeanState(chosen_device), LeanState(chosen_device)
+            x = -self.track.length / 3 if scenario in ("accelerate-brake", "s-turn") else 0.0
+            y = -min(1.3, self.track.width / 4) if scenario == "circle" else 0.0
+            self.initial_pose = np.array([[x, y, self.drive.ride_height(self.vehicle), 0, 0, 0, 1]], dtype=np.float32)
+            self.lean_motion = wp.zeros(1, dtype=wp.vec4, device=chosen_device)
+            self.collision = wp.zeros(1, dtype=int, device=chosen_device)
+        self.device_commands = wp.zeros(1, dtype=wp.vec4, device=self.model.device)
+        self._uploaded_command = None
         self.applied_controls = wp.zeros(1, dtype=wp.vec3, device=self.model.device)
         self.lidar = MountedLidar(self.track, self.vehicle, lidar, self.model.device) if lidar is not None else None
         self.lidar_stride = physics_hz // lidar.frequency if lidar is not None else 0
         self.reset()
 
     def reset(self):
-        for state in (self.state, self.next_state):
-            newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, state)
-            # Newton spatial velocity order is linear XYZ, then angular XYZ.
-            state.body_qd.assign(self.initial_velocity[None])
-            state.clear_forces()
+        if self.engine == "newton":
+            import newton
+            for state in (self.state, self.next_state):
+                newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, state)
+                state.body_qd.assign(self.initial_velocity[None])
+                state.clear_forces()
+        else:
+            for state in (self.state, self.next_state):
+                state.body_q.assign(self.initial_pose)
+                state.body_qd.zero_()
+            self.lean_motion.zero_()
+            self.collision.zero_()
         self.steps = 0
         self.command = (0.0, 0.0, 0.0)
         self.target_speed = -1.0
         self.applied_controls.zero_()
+        self._uploaded_command = None
+        self._upload_command()
         if self.lidar is not None:
             self.lidar.update(self.state, self.body, 0.0)
 
@@ -71,21 +103,44 @@ class Simulation:
         self.command = (float(np.clip(throttle, 0, 1)), float(np.clip(brake, 0, 1)),
                         float(np.clip(steering, -self.drive.max_steering, self.drive.max_steering)))
         self.target_speed = -1.0
+        self._upload_command()
 
     def set_target_speed(self, speed, steering=0.0):
         """Optional proportional controller; nonnegative target speed in m/s."""
         if not np.isfinite(speed) or speed < 0:
             raise ValueError("Target speed must be finite and nonnegative")
-        self.set_action(steering=steering)
+        if not self.driving or not np.isfinite(steering):
+            raise ValueError("A driving scenario and finite steering are required")
+        self.command = (0.0, 0.0, float(np.clip(steering, -self.drive.max_steering, self.drive.max_steering)))
         self.target_speed = float(speed)
+        self._upload_command()
 
-    def step(self):
+    def _upload_command(self):
+        payload = (*self.command, self.target_speed)
+        if payload != self._uploaded_command:
+            wp.launch(write_command, dim=1, inputs=[self.device_commands, wp.vec4(*payload)],
+                      device=self.model.device)
+            self._uploaded_command = payload
+
+    def _physics_step(self):
+        """One capture-safe substep; callers manage time and sensor scheduling."""
+        if self.engine == "lean":
+            d, v = self.drive, self.vehicle
+            wp.launch(integrate_bicycle, dim=1, inputs=[
+                self.state.body_q, self.lean_motion, self.device_commands,
+                self.applied_controls, self.collision, self.next_state.body_q, self.next_state.body_qd,
+                self.dt, v.mass, v.length, v.width, d.wheelbase, v.friction, d.lateral_stiffness,
+                d.rolling_drag, d.max_acceleration, d.max_braking, d.steering_rate, d.speed_gain,
+                self.track.length, self.track.width,
+            ], device=self.model.device)
+            self.state, self.next_state = self.next_state, self.state
+            return
         self.state.clear_forces()
         if self.driving:
             d, v = self.drive, self.vehicle
             wp.launch(apply_tire_forces, dim=1, inputs=[
                 self.state.body_q, self.state.body_qd, self.state.body_f, self.applied_controls,
-                self.body, wp.vec3(*self.command), self.target_speed, self.dt, v.mass, v.height,
+                self.body, self.device_commands, self.dt, v.mass, v.height,
                 v.friction, d.wheelbase, d.track_width, d.support_length, d.spring_stiffness,
                 d.spring_damping, d.lateral_stiffness, d.rolling_drag, d.max_acceleration,
                 d.max_braking, d.steering_rate, d.speed_gain,
@@ -93,6 +148,9 @@ class Simulation:
         self.pipeline.collide(self.state, self.contacts)
         self.solver.step(self.state, self.next_state, self.control, self.contacts, self.dt)
         self.state, self.next_state = self.next_state, self.state
+
+    def step(self):
+        self._physics_step()
         self.steps += 1
         if self.lidar is not None and self.steps % self.lidar_stride == 0:
             self.lidar.update(self.state, self.body, self.steps * self.dt)
@@ -160,7 +218,7 @@ class Simulation:
         if not np.isfinite(poses).all() or not np.isfinite(velocities).all():
             raise RuntimeError("Simulation produced non-finite state")
         metadata = {
-            "scenario": self.scenario, "device": str(self.model.device),
+            "engine": self.engine, "scenario": self.scenario, "device": str(self.model.device),
             "physics_hz": self.physics_hz, "record_fps": record_fps if record else 0,
             "simulated_seconds": total_steps * self.dt, "elapsed_seconds": elapsed,
             "steps_per_second": total_steps / elapsed,

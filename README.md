@@ -1,18 +1,20 @@
-# WarpTracer — vehicle-mounted LiDAR
+# WarpTracer — lean vehicle simulation
 
-A box car that accelerates, brakes, and steers on a flat surface with four walls.
-The `vehicle-lidar` branch adds the existing sensor prototype's LiDAR to
-`vehicle-controls`. Newton advances the rigid body; four invisible tire contact
-points apply forces. There is still **one moving body and six solid scene shapes**,
-plus scan points and a sparse ray overlay. The same scripted commands drive the car;
-LiDAR is observing, with autonomous navigation coming later.
+A box car that accelerates, brakes, and steers on a flat surface with four walls,
+with the existing 1080-beam LiDAR mounted on the chassis. The
+`performance-prototype` branch adds a lightweight Warp dynamic bicycle backend,
+device-resident controls, graph replay, and a repeatable single-car benchmark.
+Driving demos default to the lean backend. Newton remains available for comparison
+and the free-body drop/impact checks. LiDAR observes the scripted driving;
+autonomous navigation is a later milestone.
 
-[Open in Colab](https://colab.research.google.com/github/yuywe/WarpTracer/blob/vehicle-lidar/notebooks/rigidbody_colab.ipynb)
+[Driving replay in Colab](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/rigidbody_colab.ipynb) ·
+[Benchmark in Colab](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/benchmark_colab.ipynb)
 
 ## Run in Colab
 
 Run the three cells: setup, simulate, display. Setup reuses the earlier
-`/content/WarpTracer-rigidbody` clone, switches to `vehicle-lidar`, and updates
+`/content/WarpTracer-rigidbody` clone, switches to `performance-prototype`, and updates
 it with a fast-forward pull. Colab's preinstalled `uv` uses **one environment at
 that repository root** and Colab's Python interpreter. Local edits that conflict
 with switching/pulling must be resolved; setup does not discard them.
@@ -47,7 +49,8 @@ default durations. Options include `--seconds 10`, `--device cpu|cuda:0`,
 LiDAR is enabled by default; `--no-lidar` runs the vehicle-only demo and
 `--lidar-hz 30` sets scan frequency. Driving requires at least 120 physics steps/s;
 both pose recording frequency and LiDAR frequency must divide physics frequency.
-Use the default 240 Hz for the supplied spring parameters.
+Use the default 240 Hz. `--physics newton` selects the original spring/contact model.
+The drop and wall-impact demos always use Newton.
 
 Each run writes pose, velocity, and applied control arrays (`.npz`) and
 configuration/timing (`.json`). LiDAR arrays are included when enabled (details
@@ -90,7 +93,7 @@ too-near surfaces still occlude anything behind them.
 from warptracer.lidar import LidarConfig
 from warptracer.simulation import Simulation
 
-sim = Simulation(scenario="circle", lidar=LidarConfig(), device="cpu")
+sim = Simulation(scenario="circle", engine="lean", lidar=LidarConfig(), device="cpu")
 trajectory = sim.run(duration=10)
 scans = trajectory.lidar
 print(scans.ranges.shape)   # (301, 1080): initial scan plus 30 scans/s
@@ -121,38 +124,39 @@ until the next scan, while pose frames follow their own timeline.
 
 ## Driving model
 
-| Part | Representation |
-| --- | --- |
-| Car | One rigid box, 0.52 × 0.26 × 0.12 m, 3.2 kg |
-| Ground and walls | Static ground plane and four box walls; six total collision shapes including the car |
-| Tire contact points | Four mathematical points under the box; 0.32 m wheelbase, 0.22 m track width |
-| Support | Spring/damper forces against the flat floor, with no tensile force |
-| Acceleration/braking | Tangential forces; braking opposes motion and takes priority over throttle |
-| Steering | Front contact directions turn together; ±0.418 rad limit, 1.5 rad/s rate limit |
-| Grip | Longitudinal and lateral forces share a friction-circle limit based on each contact's support force |
-| Sideways motion | Linear slip-velocity damping capped by available grip |
-| Integration | Newton XPBD, 240 Hz, eight iterations; force calculations in a Warp kernel |
-| Playback | Viser, with sampled transforms at 30 frames/s |
+Both backends use the same single 0.52 × 0.26 × 0.12 m, 3.2 kg box, rectangular
+track, controls, LiDAR, and playback. Driving uses a 12 × 6 m clear area,
+or 8 × 8 m for the circle demo. There are no wheel meshes or joints.
 
-Driving uses a 12 × 6 m clear area, or 8 × 8 m for the circle demo. The drop and
-impact checks keep their 6 × 4 m area. The support points hold the box about
-4.3 cm above the floor at rest. This small gap represents the unrendered tires;
-no wheel meshes, joints, or extra rigid bodies are added.
+| Part | Lean backend | Newton baseline |
+| --- | --- | --- |
+| Motion | Forward/sideways velocity and yaw rate; dynamic bicycle | Six-degree-of-freedom rigid body |
+| Tire forces | Two axles with slip-velocity damping and shared longitudinal/lateral grip budgets | Four tire points with friction limited by spring support |
+| Steering | Front axle, ±0.418 rad limit, 1.5 rad/s rate limit | Same limits |
+| Acceleration/braking | Grip-limited propulsion; brake opposes forward motion | Tire forces |
+| Support | Fixed height, yaw-only pose | Spring/damper support |
+| Walls | Rotated box footprint clamped inside the enclosure; velocity stopped on collision | Newton contacts |
+| Integration | One Warp kernel per physics substep | Tire kernel, collision pipeline, XPBD solver |
+| Sensors/viewer | Existing 3D LiDAR and Viser playback | Same |
 
-This is a deliberately simple **flat-ground** force model. Tire support uses an
-analytic z=0 plane, not terrain raycasts. Newton still handles chassis collisions
-with the ground and walls, including when the chassis bottoms out. Tires exert
-no force when out of reach of the floor or when the body is overturned. The
-model has no wheel spin, tire slip-ratio dynamics, Ackermann linkage, reverse
-throttle, or calibrated vehicle parameters. It is a foundation for driving and
-sensor integration, not a validated racing dynamics model.
+Lean uses an implicit lateral/yaw force prediction to handle stiffness at low
+speeds, then clips forces to the available grip. It is an illustrative racing
+model, not calibrated F1TENTH dynamics. It has no suspension, roll/pitch,
+free fall, wheel spin, Ackermann linkage, reverse throttle, or terrain following.
+Terrain height/tilt can be added separately later. Newton still provides the
+earlier free-body checks. The fixed lean height uses the original nominal ride
+height; spring/damper and track-width parameters otherwise do not affect lean
+dynamics. The lean collision flag describes the latest substep.
+
+Python's `Simulation` keeps `engine="newton"` as its default for compatibility.
+Pass `engine="lean"` explicitly. Driving CLI demos default to lean.
 
 ## Control the car
 
 ```python
 from warptracer.simulation import Simulation
 
-sim = Simulation(scenario="drive", device="cpu")
+sim = Simulation(scenario="drive", engine="lean", device="cpu")
 sim.set_action(throttle=0.4, brake=0.0, steering=0.15)
 for _ in range(240):
     sim.step()  # advances one physics timestep; inputs persist
@@ -182,8 +186,8 @@ trajectory = sim.run(duration=4, controller=driver)
 `run()` starts from reset; it does not continue an earlier manual run. `reset()`
 clears controls and steering state. Without a callback, named driving scenarios
 use their scripted speed/steering requests; `drive` stays neutral. Headless
-physics makes no per-step state copies to the CPU. The Python loop still launches
-each physics step; parallel environments and CUDA graph capture are future work.
+physics makes no per-step state copies to the CPU. The demo loop launches each physics step. Use the transition runner below for
+graph execution; parallel environments are a later milestone.
 
 `DriveConfig` in `driving.py` holds the force parameters, `Track` and `Vehicle`
 in `scene.py` hold dimensions/mass, `simulation.py` advances physics, and
@@ -195,15 +199,68 @@ later samples store the controls used in the preceding physics step.
 Newton's world-frame force/torque convention is documented
 [here](https://newton-physics.github.io/newton/stable/concepts/conventions.html).
 
+## Single-car benchmark and graph execution
+
+Run on your local GPU or in the benchmark Colab notebook:
+
+```bash
+uv run --locked python -m warptracer.benchmark --device cuda:0 --physics lean --backend both --output outputs/lean-benchmark.json
+uv run --locked python -m warptracer.benchmark --device cuda:0 --physics newton --backend both --output outputs/newton-benchmark.json
+```
+
+Each command compares physics only, physics plus LiDAR, and physics plus LiDAR
+and host recording. The benchmark uses **one car**, four 240 Hz substeps per
+transition, **1080 rays at 60 Hz**, and host recording at 30 Hz. The demo uses
+30 Hz LiDAR, so its timing is a different workload. The 200k aggregate transitions/s
+reported for a batched simulator cannot be compared directly to single-car
+physics substeps/s.
+
+Five trials per case follow two simulated seconds of warmup. Timing excludes
+compilation, construction, reset, parity validation, HTML export, and disk writes.
+Recording includes host copies and retained samples, but no HTML export.
+The report contains all trials, medians, hardware/software, final states,
+physics substeps/s, and environment transitions/s. CUDA event intervals include
+stream idle gaps and are not summed kernel durations. `--profile` saves a separate
+Python call profile; it does not profile CUDA kernels.
+
+Graph execution is checked against eager state, controls, and scans before timing.
+Capture warms the used kernels and solver allocations first. Manual inputs remain
+in device buffers and can change between transitions:
+
+```python
+from warptracer.execution import TransitionRunner
+from warptracer.lidar import LidarConfig
+from warptracer.simulation import Simulation
+
+sim = Simulation(scenario="drive", engine="lean", device="cuda:0",
+                 lidar=LidarConfig(frequency=60))
+runner = TransitionRunner(sim, backend="graph", substeps=4)
+sim.set_target_speed(1, steering=.2)
+for _ in range(60):
+    runner.advance()
+runner.reset()
+```
+
+Use the runner exclusively for stepping and reset while it owns the simulation.
+An even substep count restores the captured input/output buffer identities;
+when LiDAR is enabled its rate must equal the transition rate. A device-side
+scripted circle controller is used for benchmarking, avoiding host input updates
+during the timed loop. Ordinary Python controllers can still set inputs between
+transitions.
+
+Without a GPU, use `--device cpu --backend both`. Warp's CPU API capture can test
+replay correctness and reduce Python overhead, but its timing is not a CUDA
+measurement. This environment has no CUDA driver; native CUDA behavior needs
+validation on your GPU. Automatic backend selection uses both on CUDA and eager
+on CPU.
+
 ## Verification and next milestone
 
 ```bash
 uv run --locked --extra viz --extra dev pytest -q
 ```
 
-See [VALIDATION.md](VALIDATION.md) for results and limits. Newton, Warp, and Viser
-remain pinned in the existing root `uv.lock`; no new dependencies are needed.
-
-Next: connect disparity extender to these scans and the existing target-speed /
-steering interface. This branch runs the same scripted driving checks with LiDAR;
-it does not add a navigation controller or RL training.
+See [VALIDATION.md](VALIDATION.md) for results and limits. Existing root dependencies
+and `uv.lock` are unchanged. Next: run the GPU benchmark, then batch the lean
+state/control arrays across environments. Disparity extender can use the existing
+LiDAR and target-speed/steering interface; PPO is not added here.

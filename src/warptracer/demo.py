@@ -10,8 +10,9 @@ from .lidar import LidarConfig
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Flat rectangle and one rigid box in Newton")
+    parser = argparse.ArgumentParser(description="Flat rectangle and one box car with mounted LiDAR")
     parser.add_argument("--scenario", choices=("accelerate-brake", "circle", "s-turn", "drop", "wall-impact"), default="accelerate-brake")
+    parser.add_argument("--physics", choices=("lean", "newton"), default="lean")
     parser.add_argument("--device", default=None, help="cpu or cuda:0; default selects available CUDA")
     parser.add_argument("--seconds", type=float, default=None)
     parser.add_argument("--physics-hz", type=int, default=240)
@@ -21,7 +22,8 @@ def main(argv=None):
     parser.add_argument("--headless", action="store_true", help="Skip replay and intermediate CPU copies")
     parser.add_argument("--output", type=Path, default=Path("outputs"))
     args = parser.parse_args(argv)
-    sim = Simulation(scenario=args.scenario, device=args.device, physics_hz=args.physics_hz,
+    physics = "newton" if args.scenario in ("drop", "wall-impact") else args.physics
+    sim = Simulation(engine=physics, scenario=args.scenario, device=args.device, physics_hz=args.physics_hz,
                      lidar=None if args.no_lidar else LidarConfig(frequency=args.lidar_hz))
     duration = args.seconds if args.seconds is not None else (10.0 if sim.driving else 4.0)
     trajectory = sim.run(duration, args.record_fps, record=not args.headless)
@@ -49,7 +51,7 @@ def main(argv=None):
         scans = trajectory.lidar
         print(f"LiDAR: {scans.ranges.shape[1]} beams at {args.lidar_hz} Hz; "
               f"{len(scans.times)} saved scans; {100 * scans.valid.mean():.1f}% valid returns.")
-    print("One box chassis, one floor, four walls.")
+    print(f"Physics: {sim.engine}; one box chassis, one floor, four walls.")
 
 
 if __name__ == "__main__":

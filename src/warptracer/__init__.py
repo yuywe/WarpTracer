@@ -1,1 +1,1 @@
-"""A small Newton rigid-body playground for the WarpTracer project."""
+"""Minimal vehicle dynamics and mounted sensing for the WarpTracer project."""

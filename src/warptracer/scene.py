@@ -1,7 +1,6 @@
 """Shared geometry for physics and playback. Units: meters, kilograms, seconds."""
 from dataclasses import dataclass
 
-import newton
 import numpy as np
 import warp as wp
 
@@ -51,6 +50,8 @@ def build_model(track, vehicle, scenario="drop", device=None, drive=None):
     """One free body; all track shapes are static and do not add dynamic bodies."""
     if scenario not in ("drop", "wall-impact", "drive", "accelerate-brake", "circle", "s-turn"):
         raise ValueError("Unknown scenario")
+    import newton
+
     wp.init()
     device = wp.get_device(device or ("cuda:0" if wp.is_cuda_available() else "cpu"))
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, -9.81))

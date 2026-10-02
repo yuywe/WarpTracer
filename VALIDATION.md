@@ -1,79 +1,85 @@
 # Validation
 
-Checked on 2026-10-01 with Linux x86-64, Python 3.12.14, Newton 1.6.0,
-Warp 1.17.0, and Viser 1.0.26, using the existing root `uv.lock`.
+Checked on 2026-10-02 with Linux x86-64, Python 3.12.14, Newton 1.6.0,
+Warp 1.17.0, and Viser 1.0.26, using the unchanged root uv.lock.
 
-## Automated behavior checks
+## Behavior and capture checks
 
-`uv run --locked --extra viz --extra dev pytest -q`: **23 passed, 3 skipped**.
+`uv run --locked --extra viz --extra dev pytest -q`: **32 passed, 5 skipped**.
 
-Driving checks cover support at rest, reset of body and controls, forward
-acceleration, braking to rest without appreciable reverse motion, coasting
-versus braking, symmetric left/right turns, steering rate limits, zero-grip
-propulsion, airborne behavior, invalid controls, and a wall collision under
-continued throttle. Existing free-fall, floor-contact, barrier-impact, and
-configuration checks also pass.
+The original Newton driving, free-body, and LiDAR tests still pass. New lean
+checks cover acceleration, braking without sustained reverse, fixed height,
+normalized orientation, stationary steering, reset, symmetric turns and steering
+rate limits, zero-grip coasting under throttle/steering, and rotated chassis
+containment with stop-on-wall behavior.
 
-LiDAR integration checks cover known wall distances, translated/yawed mounts,
-full body-plus-mount rotation, downward floor hits, minimum range filtering,
-upward misses, reset, borrowed-buffer reuse, independent scan/recording rates,
-and headless scan timing. Moving scans in each of the three driving scenarios
-match independent analytic box/floor intersections. Enabling LiDAR produces
-bit-identical body poses and velocities in the paired CPU turning check.
+For both engines, captured and eager transitions agree after changing speed and
+steering requests and after reset, including body poses, velocities, and mounted
+LiDAR. Unsafe odd substep counts and inconsistent sensor schedules are rejected.
+The benchmark independently checks eager/graph poses, velocities, applied
+controls, scan poses, ranges, masks, and device step counts before timing.
 
-CUDA drop, driving, and mounted-scan checks are included but skipped here because no NVIDIA
-driver is available. GPU behavior and performance remain unverified.
+Five CUDA checks are skipped because this environment has no NVIDIA driver.
+CPU graph replay uses Warp's CPU API capture, not native CUDA graphs. Actual
+CUDA capture, event timing, and performance must be checked on a GPU.
+No automatic fallback hides capture errors.
 
-## Ten-second driving demonstrations
+## Single-car CPU benchmark
 
-| Scenario | Measured CPU result |
-| --- | --- |
-| Accelerate/brake | Peak speed 1.688 m/s; stopped by the end; 2.9 m total forward travel |
-| Circle | Approximately 0.938 m/s steady speed; 6.65 radians of heading change, completing a full lap |
-| S-turn | Peak speed 0.849 m/s; yaw rate changes sign; stopped by the end |
+Both engines use the same scripted circle workload, four 240 Hz physics substeps
+per transition, 1080 rays at 60 Hz in sensing cases, and 30 Hz host recording.
+Three trials follow two simulated seconds of warmup each. Lean trials advance
+60 simulated seconds; Newton trials advance 10. Medians below measure one car,
+not aggregate throughput across parallel environments.
 
-All three trajectories remain inside their walls and export valid ten-second
-Viser recordings. Each contains six boxes, one return point cloud, and one ray
-line batch. The static ray-casting mesh is not rendered. The NPZ files contain
-301 body samples and 301 LiDAR scans, each with 1080 beams, at the default 30 Hz.
-All returns in these enclosed, flat-ground demonstrations are valid.
+Timing includes stepping, sensing, and optional host recording. It excludes
+compilation, construction, warmup, reset, validation, HTML export, and disk writes.
+Recording retains body/control/scan samples; it does not generate the viewer.
 
-Decoded replay data contains correctly timed LiDAR geometry updates. HTML sizes
-are approximately 3.05 MB (accelerate/brake), 3.46 MB (circle), and 3.42 MB (S-turn).
-Every beam is saved; playback displays every sixth return and every 36th ray.
-A separate headless circle run completed, and automated checks confirm headless
-execution retains the initial/latest scans while sensing continues on schedule.
+| Engine | Execution | Physics only, substeps/s | With LiDAR, substeps/s | With LiDAR + recording, substeps/s |
+| --- | --- | ---: | ---: | ---: |
+| lean | eager | 19,632 | 9,068 | 8,429 |
+| lean | graph | 1,615,713 | 16,256 | 12,750 |
+| newton | eager | 408 | 392 | 401 |
+| newton | graph | 5,010 | 3,769 | 3,612 |
 
-Additional checks:
+Divide substeps/s by four for environment transitions/s.
 
-- Driving into a wall under continued speed demand stops the box at the wall
-  face (center x approximately 1.740 m in a four-meter enclosure).
-- A two-second constant-steering run at 120, 240, and 480 Hz produces final XY
-  positions differing by less than 9 mm between the lowest and highest rate.
-  This checks the default parameters, not arbitrary spring stiffnesses.
-- The notebook's code cells compile. Its exact Git setup sequence succeeds
-  twice in succession from single-branch rigidbody-prototype, vehicle-controls,
-  and vehicle-lidar clones, using temporary local clones for this check.
-- The four reused `src/racesense3d` library files match sensor-prototype commit
-  `51b2d1c8a4c4460d1b1828e5b0240ee287ba577d` byte-for-byte.
-- Actual hosted Colab execution and rendered browser playback have not been
-  checked in this environment. Exported scene data was decoded and inspected.
+Reproduce the CPU measurements:
 
-## Model scope
+```bash
+uv run --locked python -m warptracer.benchmark --device cpu --physics lean --backend both --seconds 60 --trials 3 --output outputs/lean-cpu.json
+uv run --locked python -m warptracer.benchmark --device cpu --physics newton --backend both --seconds 10 --trials 3 --output outputs/newton-cpu.json
+```
 
-There is one six-degree-of-freedom rigid box. Its four unrendered contact points
-use spring/damper support and friction-limited longitudinal/lateral forces.
-Only the flat z=0 floor supports the tires. Steering rotates both front contact
-directions equally. Propulsion is distributed across all four points. Braking
-is smoothed below 0.2 m/s to reduce suspension recoil near rest.
+The physics-only lean graph trial is very short, so its rate is especially
+sensitive to timer resolution and machine load. CPU results are indicative,
+not a GPU speed claim. JSON reports retain individual trials and timing spread.
+The original demo scans at 30 Hz; benchmark sensing is twice that rate.
 
-This is a simple force model with illustrative parameters. It does not model
-wheel spin, calibrated tire slip curves, Ackermann geometry, reverse throttle,
-or tire support on uneven terrain. The speed helper is proportional and can
-have steady error under drag.
+## Driving and playback
 
-Only LiDAR is attached. Scans are instantaneous and noise-free; self returns
-from the host vehicle are excluded. The static sensor mesh mirrors the four
-walls and includes a floor patch extending beyond the enclosure by the sensing
-range. Moving obstacles and rotating-scan distortion are not modeled.
-Disparity extender, parallel environments, and PPO remain subsequent milestones.
+All three ten-second lean driving demos export Viser HTML, trajectory NPZ, and
+metadata JSON. Each has 301 body samples and 301 mounted scans with 1080 beams
+at the default 30 Hz, with all returns valid. Acceleration/braking peaks near
+1.69 m/s and stops; the circle completes a lap; the S-turn changes steering
+direction and stops. The scene still uses one box car, one floor, and four walls.
+
+All code cells in both notebooks compile. The benchmark notebook clones or switches to
+performance-prototype and uses the same repository-root uv environment as the
+driving notebook. Actual hosted Colab and native browser playback have not been
+tested here.
+
+## Model limits
+
+Lean is a flat-ground dynamic bicycle with illustrative parameters, two
+friction-limited axle forces, an implicit lateral/yaw prediction, and fixed
+height. Its rectangular wall check clamps the rotated chassis footprint and
+stops velocity. It does not simulate suspension, roll/pitch, free fall,
+calibrated tire slip curves, wheel spin, reverse throttle, or terrain following.
+Newton remains available for the earlier force/contact behavior.
+
+LiDAR is instantaneous and noise-free, using the unchanged sensor package.
+The host vehicle is excluded; static wall/floor geometry is shared with playback.
+No moving obstacles, scan distortion, navigation controller, parallel
+environments, or PPO are added in this milestone.

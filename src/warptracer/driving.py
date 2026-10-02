@@ -42,17 +42,24 @@ class DriveConfig:
 
 
 @wp.kernel
+def write_command(commands: wp.array(dtype=wp.vec4), value: wp.vec4):
+    commands[0] = value
+
+
+@wp.kernel
 def apply_tire_forces(
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_f: wp.array(dtype=wp.spatial_vector),
     controls: wp.array(dtype=wp.vec3),
-    body: int, command: wp.vec3, target_speed: float,
+    body: int, commands: wp.array(dtype=wp.vec4),
     dt: float, mass: float, height: float, friction: float,
     wheelbase: float, track_width: float, support_length: float,
     spring: float, damping: float, lateral_stiffness: float, drag: float,
     max_acceleration: float, max_braking: float, steering_rate: float, speed_gain: float,
 ):
+    command = commands[0]
+    target_speed = command[3]
     # Newton spatial arrays store linear components first, angular components last.
     pose = body_q[body]
     rotation = wp.transform_get_rotation(pose)
