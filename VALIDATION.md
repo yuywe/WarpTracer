@@ -19,10 +19,47 @@ LiDAR. Unsafe odd substep counts and inconsistent sensor schedules are rejected.
 The benchmark independently checks eager/graph poses, velocities, applied
 controls, scan poses, ranges, masks, and device step counts before timing.
 
-Five CUDA checks are skipped because this environment has no NVIDIA driver.
-CPU graph replay uses Warp's CPU API capture, not native CUDA graphs. Actual
-CUDA capture, event timing, and performance must be checked on a GPU.
+Five CUDA tests were skipped in the local CPU-only environment. CPU graph replay
+uses Warp's CPU API capture. The user-supplied GPU benchmark below separately
+confirms lean CUDA graph/eager parity for its workload; it does not establish
+that the full CUDA test suite or the Newton CUDA backend passes.
 No automatic fallback hides capture errors.
+
+## User-supplied CUDA benchmark
+
+Source: uploaded `benchmark.json`, reviewed with this documentation update.
+Hardware: **NVIDIA GeForce RTX 4060 Laptop GPU**, Windows 11, Python 3.12.12,
+Warp 1.17.0, Newton 1.6.0, NumPy 2.5.3. Physics engine: **lean**.
+
+One car; four 240 Hz substeps per transition; 1080 LiDAR beams at 60 Hz;
+recording at 30 Hz. Each of five trials advances ten simulated seconds after
+two simulated seconds of warmup. These are medians from the supplied report.
+
+| Workload | Eager transitions/s | Graph transitions/s | Graph substeps/s | Graph speedup |
+| --- | ---: | ---: | ---: | ---: |
+| Physics only | 4,675 | 57,283 | 229,130 | 12.3× |
+| Physics + LiDAR | 4,406 | 29,360 | 117,442 | 6.7× |
+| Physics + LiDAR + recording | 2,636 | 6,537 | 26,149 | 2.5× |
+
+All three CUDA graph parity checks report passed. Recomputed medians agree with
+the report, and all 30 trials have identical final body poses and velocities.
+Recording trials retain 301 frames each. This validates the benchmark workload,
+not arbitrary vehicle states or all GPU test cases.
+
+With LiDAR and graph replay, ten simulated seconds take **20.44 ms** at the
+median, about **489× real time**. Adding host recording raises this to **91.78 ms**
+(about 109× real time). That points to host copying/synchronization as a major
+cost in the recording path; it is not a kernel-level profile.
+
+Physics-only graph trials span 9.16–15.06 ms; LiDAR graph trials span
+17.04–28.10 ms. These short trials show noticeable variation. Use the
+[longer headless benchmark](docs/benchmarking.md#longer-timing-samples) before
+drawing fine-grained performance conclusions. CUDA event intervals include
+stream idle time; they do not isolate GPU kernel time.
+
+This report compares eager and graph execution of lean physics. It contains
+no Newton timings, so it cannot establish lean-versus-Newton GPU speedup.
+Parallel-environment throughput remains unmeasured.
 
 ## Single-car CPU benchmark
 
