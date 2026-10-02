@@ -43,7 +43,7 @@ class DriveConfig:
 
 @wp.kernel
 def write_command(commands: wp.array(dtype=wp.vec4), value: wp.vec4):
-    commands[0] = value
+    commands[wp.tid()] = value
 
 
 @wp.kernel

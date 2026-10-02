@@ -6,7 +6,8 @@ an interactive replay that you can orbit, pause, and scrub.
 
 This branch is `performance-prototype`. Driving uses a lightweight Warp model;
 Newton is also available. The car currently follows scripted commands.
-Autonomous navigation and parallel environments are the next milestones.
+Batched independent cars are available for benchmarking. Autonomous navigation
+is the next milestone.
 
 ## Run locally
 
@@ -84,17 +85,24 @@ Use `--device cpu` without an NVIDIA GPU, or open the
 [benchmark notebook in Colab](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/benchmark_colab.ipynb).
 
 The command compares ordinary execution (`eager`) with captured graph replay
-(`graph`) for physics alone, physics with LiDAR, and physics with LiDAR plus
-host recording. Results are written to **`outputs/benchmark.json`**.
+(`graph`). Lean benchmarks default to fused physics substeps, and warm up for
+at least two real seconds before each trial. Results go to **`outputs/benchmark.json`**.
 
-**One transition = four physics substeps.** The benchmark runs one car at
+**One transition = four physics substeps.** The default benchmark runs one car at
 240 physics substeps per simulated second, with 108 LiDAR rays at 60 Hz.
 The driving replay uses 30 Hz LiDAR. Compare matching workloads and units.
 
-In a user-supplied RTX 4060 Laptop GPU run **using the previous 1080-ray setting**, lean graph execution with LiDAR
-reached **29,360 transitions/s** (117,442 physics substeps/s), a **6.7×**
-improvement over eager execution. All benchmark parity checks passed.
-See [validation results](VALIDATION.md) for timings and measurement limits.
+Compare fusion first, then sweep independent cars:
+
+```bash
+uv run --locked python -m warptracer.benchmark --device cuda:0 --backend graph --integrator both --envs 1 --cases physics lidar --seconds 1000 --output outputs/fusion.json
+uv run --locked python -m warptracer.benchmark --device cuda:0 --backend graph --integrator fused --envs 1 64 256 1024 --cases physics lidar --seconds 100 --output outputs/batches.json
+```
+
+**Aggregate transitions/s** counts all cars; **batch transitions/s** counts
+advances of the whole batch. Each car has its own state and scan, sharing the
+same static track geometry. See the [benchmark guide](docs/benchmarking.md)
+for 40 Hz sensing, timing interpretation, and the Python API.
 
 ## Further details
 

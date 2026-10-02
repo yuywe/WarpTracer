@@ -7,7 +7,7 @@ def circle_command(commands: wp.array(dtype=wp.vec4), clock: wp.array(dtype=int)
     speed = float(0.0)
     if float(clock[0]) * dt >= 0.5:
         speed = 1.0
-    commands[0] = wp.vec4(0.0, 0.0, 0.25, speed)
+    commands[wp.tid()] = wp.vec4(0.0, 0.0, 0.25, speed)
 
 
 @wp.kernel
@@ -22,7 +22,7 @@ class TransitionRunner:
     LiDAR scan at the end. Even counts restore the state-buffer parity on every
     graph replay. The graph reads commands from stable device buffers.
     """
-    def __init__(self, sim, backend="eager", substeps=4, controller="manual"):
+    def __init__(self, sim, backend="eager", substeps=4, controller="manual", integrator="unfused"):
         if backend not in ("eager", "graph"):
             raise ValueError("backend must be eager or graph")
         if not isinstance(substeps, int) or substeps < 2 or substeps % 2:
@@ -35,6 +35,11 @@ class TransitionRunner:
             raise ValueError("controller must be manual or circle")
         if controller == "circle" and (not sim.driving or sim.drive.max_steering < .25):
             raise ValueError("Circle benchmark requires a driving car with >= .25 rad steering")
+        if integrator not in ("unfused", "fused"):
+            raise ValueError("integrator must be unfused or fused")
+        if integrator == "fused" and sim.engine != "lean":
+            raise ValueError("Fused integration requires lean physics")
+        self.integrator = integrator
         self.sim, self.backend, self.substeps, self.controller = sim, backend, substeps, controller
         self.clock = wp.zeros(1, dtype=int, device=sim.model.device)
         self.graph = None
@@ -58,10 +63,13 @@ class TransitionRunner:
     def _operations(self):
         sim = self.sim
         if self.controller == "circle":
-            wp.launch(circle_command, dim=1, inputs=[sim.device_commands, self.clock, sim.dt],
+            wp.launch(circle_command, dim=sim.num_envs, inputs=[sim.device_commands, self.clock, sim.dt],
                       device=sim.model.device)
-        for _ in range(self.substeps):
-            sim._physics_step()
+        if self.integrator == "fused":
+            sim._fused_physics_steps(self.substeps)
+        else:
+            for _ in range(self.substeps):
+                sim._physics_step()
         if sim.lidar is not None:
             sim.lidar.update(sim.state, sim.body, 0.0)
         wp.launch(advance_clock, dim=1, inputs=[self.clock, self.substeps], device=sim.model.device)

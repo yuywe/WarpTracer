@@ -5,7 +5,7 @@ Warp 1.17.0, and Viser 1.0.26, using the unchanged root uv.lock.
 
 ## Behavior and capture checks
 
-`uv run --locked --extra viz --extra dev pytest -q`: **37 passed, 5 skipped**.
+`uv run --locked --extra viz --extra dev pytest -q`: **49 passed, 14 skipped**.
 
 The default scan is now 108 rays; both demo and benchmark accept
 `--lidar-beams 1080` for dense scans. Moving scans at both resolutions match
@@ -26,13 +26,58 @@ LiDAR. Unsafe odd substep counts and inconsistent sensor schedules are rejected.
 The benchmark independently checks eager/graph poses, velocities, applied
 controls, scan poses, ranges, masks, and device step counts before timing.
 
-Five CUDA tests were skipped in the local CPU-only environment. CPU graph replay
+Fourteen CUDA tests were skipped in the local CPU-only environment. CPU graph replay
 uses Warp's CPU API capture. The user-supplied GPU benchmark below separately
 confirms lean CUDA graph/eager parity for its workload; it does not establish
-that the full CUDA test suite or the Newton CUDA backend passes.
+that the full CUDA test suite, the Newton CUDA backend, or the new fused/batched
+CUDA paths pass.
 No automatic fallback hides capture errors.
 
-## User-supplied CUDA benchmark
+## Fusion, batches, and wall-clock warmup
+
+The shared bicycle step was compared against the pre-refactor kernel from commit
+`f0d9f02`: all saved poses and velocities in the ten-second accelerate/brake,
+circle, and S-turn CPU trajectories agree within 1e-6 absolute/relative tolerance.
+
+New CPU tests compare every entry of three-car batches against separate single-car
+runs, using different commands, acceleration, braking, turns, wall collisions,
+reset, and mounted LiDAR. All eager/graph and fused/unfused combinations pass at
+four and six substeps (60 and 40 Hz sensing). A 257-car test checks indexing beyond
+one thread block and compares selected cars against individual runs.
+Warmup tests check the elapsed wall-clock minimum and restoration of time-zero
+state/scans. Benchmark tests check batch counts, aggregate throughput units,
+40 Hz headless operation, resolution selection, and the report schema.
+
+The default benchmark now requires two real seconds of warmup before every trial.
+Historical reports below used only two simulated seconds. A variation flag marks
+max/min elapsed time above 1.2; this does not diagnose the cause of variation.
+
+An exploratory CPU API graph sweep ran three trials, ten simulated seconds each,
+with 108 rays at 60 Hz and a shortened **0.25-real-second warmup**:
+
+| Cars | Integrator | Physics aggregate transitions/s | With LiDAR aggregate transitions/s |
+| ---: | --- | ---: | ---: |
+| 1 | unfused | 498,108 | 38,775 |
+| 1 | fused | 696,182 | 40,861 |
+| 64 | unfused | 1,861,329 | 44,883 |
+| 64 | fused | 2,062,047 | 44,047 |
+
+These are CPU measurements, not predictions for the user's GPU. Physics-only
+single-car samples last about one millisecond; their rates are especially
+sensitive to overhead. Fusion has little effect on the CPU LiDAR batch workload.
+All eight configurations passed full-array comparison against unfused eager
+execution before timing. The 64-car fused physics timing had max/min > 1.2.
+
+Reproduce this CPU sweep:
+
+```bash
+uv run --locked python -m warptracer.benchmark --device cpu --backend graph --integrator both --envs 1 64 --cases physics lidar --seconds 10 --trials 3 --warmup-wall-seconds .25 --output outputs/fusion-batch-cpu.json
+```
+
+The README and Colab benchmark provide GPU runs with the default two-real-second
+warmup. New fused/batched native CUDA performance remains unmeasured here.
+
+## User-supplied CUDA benchmark (historical: unfused)
 
 Source: uploaded `benchmark.json`, reviewed with this documentation update.
 Hardware: **NVIDIA GeForce RTX 4060 Laptop GPU**, Windows 11, Python 3.12.12,
@@ -92,8 +137,8 @@ Divide substeps/s by four for environment transitions/s.
 Reproduce the historical CPU measurements:
 
 ```bash
-uv run --locked python -m warptracer.benchmark --device cpu --physics lean --backend both --lidar-beams 1080 --seconds 60 --trials 3 --output outputs/lean-cpu.json
-uv run --locked python -m warptracer.benchmark --device cpu --physics newton --backend both --lidar-beams 1080 --seconds 10 --trials 3 --output outputs/newton-cpu.json
+uv run --locked python -m warptracer.benchmark --device cpu --physics lean --backend both --integrator unfused --warmup-wall-seconds 0 --lidar-beams 1080 --seconds 60 --trials 3 --output outputs/lean-cpu.json
+uv run --locked python -m warptracer.benchmark --device cpu --physics newton --backend both --integrator unfused --warmup-wall-seconds 0 --lidar-beams 1080 --seconds 10 --trials 3 --output outputs/newton-cpu.json
 ```
 
 The physics-only lean graph trial is very short, so its rate is especially
@@ -125,5 +170,6 @@ Newton remains available for the earlier force/contact behavior.
 
 LiDAR is instantaneous and noise-free, using the unchanged sensor package.
 The host vehicle is excluded; static wall/floor geometry is shared with playback.
-No moving obstacles, scan distortion, navigation controller, parallel
-environments, or PPO are added in this milestone.
+Independent environments now share static geometry and run in batches.
+Moving obstacles, scan distortion, navigation, per-environment auto-reset,
+rewards, and PPO are not implemented.

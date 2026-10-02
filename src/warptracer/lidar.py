@@ -50,10 +50,11 @@ class LidarConfig:
 def _mount_pose(body_q: wp.array(dtype=wp.transform), body: int, mount: wp.transform,
                 poses: wp.array(dtype=wp.transform), origins: wp.array(dtype=wp.vec3),
                 rotations: wp.array(dtype=wp.mat33)):
-    pose = wp.transform_multiply(body_q[body], mount)
-    poses[0] = pose
-    origins[0] = wp.transform_get_translation(pose)
-    rotations[0] = wp.quat_to_matrix(wp.transform_get_rotation(pose))
+    i = wp.tid()
+    pose = wp.transform_multiply(body_q[body + i], mount)
+    poses[i] = pose
+    origins[i] = wp.transform_get_translation(pose)
+    rotations[i] = wp.quat_to_matrix(wp.transform_get_rotation(pose))
 
 
 @dataclass
@@ -76,7 +77,8 @@ class LidarRecording:
 
 class MountedLidar:
     """Reusable, device-resident scanner. The host vehicle is excluded from its mesh."""
-    def __init__(self, track, vehicle, config, device):
+    def __init__(self, track, vehicle, config, device, batch_size=1):
+        self.batch_size = batch_size
         self.config = config
         self.rays = config.rays()
         self.mount_position = config.mount_position or (0.12, 0.0, vehicle.height / 2 + 0.025)
@@ -88,8 +90,8 @@ class MountedLidar:
             center, half_size = np.asarray(position), np.asarray(dimensions) / 2
             quads.extend(box(center - half_size, center + half_size))
         self.scene = from_quads(quads, device=device)
-        self.sensor = self.scene.sensor(self.rays, near=config.near, far=config.far)
-        self.poses = wp.empty(1, dtype=wp.transform, device=device)
+        self.sensor = self.scene.sensor(self.rays, batch_size=batch_size, near=config.near, far=config.far)
+        self.poses = wp.empty(batch_size, dtype=wp.transform, device=device)
         self.timestamp = 0.0
 
     @property
@@ -98,7 +100,7 @@ class MountedLidar:
         return self.sensor.result
 
     def update(self, state, body, timestamp):
-        wp.launch(_mount_pose, dim=1, inputs=[state.body_q, body, self.mount],
+        wp.launch(_mount_pose, dim=self.batch_size, inputs=[state.body_q, body, self.mount],
                   outputs=[self.poses, self.sensor.origins, self.sensor.rotations],
                   device=self.scene.device)
         self.sensor.scan_device(self.sensor.origins, self.sensor.rotations)
@@ -107,4 +109,7 @@ class MountedLidar:
     def snapshot(self):
         """Explicit host copies for recordings/inspection only."""
         values, valid = self.result.numpy()
-        return self.poses.numpy()[0].copy(), values.reshape(-1).copy(), valid.reshape(-1).copy()
+        poses = self.poses.numpy()
+        if self.batch_size == 1:
+            return poses[0].copy(), values.reshape(-1).copy(), valid.reshape(-1).copy()
+        return poses.copy(), values.reshape(self.batch_size, -1).copy(), valid.reshape(self.batch_size, -1).copy()

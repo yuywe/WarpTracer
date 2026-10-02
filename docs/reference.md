@@ -79,7 +79,7 @@ or 8 × 8 m for the circle demo. There are no wheel meshes or joints.
 | Acceleration/braking | Grip-limited propulsion; brake opposes forward motion | Tire forces |
 | Support | Fixed height, yaw-only pose | Spring/damper support |
 | Walls | Rotated box footprint clamped inside the enclosure; velocity stopped on collision | Newton contacts |
-| Integration | One Warp kernel per physics substep | Tire kernel, collision pipeline, XPBD solver |
+| Integration | One Warp kernel per substep, or fused substeps via TransitionRunner | Tire kernel, collision pipeline, XPBD solver |
 | Sensors/viewer | Existing 3D LiDAR and Viser playback | Same |
 
 Lean uses an implicit lateral/yaw force prediction to handle stiffness at low
@@ -129,8 +129,8 @@ trajectory = sim.run(duration=4, controller=driver)
 `run()` starts from reset; it does not continue an earlier manual run. `reset()`
 clears controls and steering state. Without a callback, named driving scenarios
 use their scripted speed/steering requests; `drive` stays neutral. Headless
-physics makes no per-step state copies to the CPU. The demo loop launches each physics step. Use the [transition runner](benchmarking.md) for graph execution; parallel
-environments are a later milestone.
+physics makes no per-step state copies to the CPU. The demo loop launches each physics step. Use the [transition runner](benchmarking.md) for graph execution; batched
+environments are available through that runner.
 
 `DriveConfig` in `driving.py` holds the force parameters, `Track` and `Vehicle`
 in `scene.py` hold dimensions/mass, `simulation.py` advances physics, and
@@ -142,3 +142,10 @@ later samples store the controls used in the preceding physics step.
 Newton's world-frame force/torque convention is documented
 [here](https://newton-physics.github.io/newton/stable/concepts/conventions.html).
 
+
+## Batches
+
+Pass `num_envs=N` with `engine="lean"` for independent cars sharing static track
+geometry. The single-car API and array shapes are unchanged when N=1.
+For batch controls, captured stepping, array shapes, and resets, see the
+[benchmark API example](benchmarking.md#python-api).

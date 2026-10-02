@@ -1,31 +1,21 @@
-"""Flat-ground dynamic bicycle with bounded grip and stop-on-wall behavior.
-
-One kernel advances planar velocities and yaw. Height is fixed; the pose remains
-3D so the existing mounted ray caster and playback need no special conversion.
-"""
+"""Flat-ground bicycle dynamics shared by single-step and fused batch kernels."""
 import warp as wp
 
 
 class LeanState:
-    def __init__(self, device):
-        self.body_q = wp.empty(1, dtype=wp.transform, device=device)
-        self.body_qd = wp.empty(1, dtype=wp.spatial_vector, device=device)
+    def __init__(self, device, count=1):
+        self.body_q = wp.empty(count, dtype=wp.transform, device=device)
+        self.body_qd = wp.empty(count, dtype=wp.spatial_vector, device=device)
 
 
-@wp.kernel
-def integrate_bicycle(
-    poses: wp.array(dtype=wp.transform),
-    motion: wp.array(dtype=wp.vec4), commands: wp.array(dtype=wp.vec4),
-    controls: wp.array(dtype=wp.vec3), collision: wp.array(dtype=int),
-    out_poses: wp.array(dtype=wp.transform), out_velocities: wp.array(dtype=wp.spatial_vector),
+@wp.func
+def bicycle_step(pose: wp.transform, state: wp.vec4, command: wp.vec4, control: wp.vec3,
     dt: float, mass: float, length: float, width: float, wheelbase: float,
     friction: float, stiffness: float, drag: float, max_acceleration: float,
     max_braking: float, steering_rate: float, speed_gain: float,
     track_length: float, track_width: float,
 ):
-    state = motion[0]
     u, v, yaw_rate, heading = state[0], state[1], state[2], state[3]
-    command = commands[0]
     throttle, brake = command[0], command[1]
     if command[3] >= 0.0:
         acceleration = speed_gain * (command[3] - u)
@@ -35,9 +25,9 @@ def integrate_bicycle(
             throttle, brake = 0.0, 1.0
     if brake > 0.0:
         throttle = 0.0
-    steering = controls[0][2] + wp.clamp(command[2] - controls[0][2],
+    steering = control[2] + wp.clamp(command[2] - control[2],
                                          -steering_rate * dt, steering_rate * dt)
-    controls[0] = wp.vec3(throttle, brake, steering)
+    control = wp.vec3(throttle, brake, steering)
     c, s = wp.cos(steering), wp.sin(steering)
     axle = 0.5 * wheelbase
     inertia = mass * (length * length + width * width) / 12.0
@@ -65,7 +55,7 @@ def integrate_bicycle(
     next_yaw = yaw_rate + dt * axle * (front * c - rear) / inertia
     next_v = v + dt * ((front * c + rear) / mass - next_yaw * u)
     next_u = u + dt * ((longitudinal - front * s - 4.0 * drag * u) / mass + next_yaw * next_v)
-    position = wp.transform_get_translation(poses[0])
+    position = wp.transform_get_translation(pose)
     x = position[0] + dt * (wp.cos(heading) * next_u - wp.sin(heading) * next_v)
     y = position[1] + dt * (wp.sin(heading) * next_u + wp.cos(heading) * next_v)
     heading += dt * next_yaw
@@ -74,15 +64,69 @@ def integrate_bicycle(
     hx = 0.5 * (wp.abs(wp.cos(heading)) * length + wp.abs(wp.sin(heading)) * width)
     hy = 0.5 * (wp.abs(wp.sin(heading)) * length + wp.abs(wp.cos(heading)) * width)
     limit_x, limit_y = 0.5 * track_length - hx, 0.5 * track_width - hy
-    collision[0] = 0
+    hit_wall = 0
     if wp.abs(x) >= limit_x or wp.abs(y) >= limit_y:
         x = wp.clamp(x, -limit_x, limit_x)
         y = wp.clamp(y, -limit_y, limit_y)
         next_u, next_v, next_yaw = 0.0, 0.0, 0.0
-        collision[0] = 1
-    motion[0] = wp.vec4(next_u, next_v, next_yaw, heading)
-    out_poses[0] = wp.transform(wp.vec3(x, y, position[2]), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), heading))
-    out_velocities[0] = wp.spatial_vector(
+        hit_wall = 1
+    state = wp.vec4(next_u, next_v, next_yaw, heading)
+    out_pose = wp.transform(wp.vec3(x, y, position[2]), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), heading))
+    velocity = wp.spatial_vector(
         wp.vec3(wp.cos(heading) * next_u - wp.sin(heading) * next_v,
                 wp.sin(heading) * next_u + wp.cos(heading) * next_v, 0.0),
         wp.vec3(0.0, 0.0, next_yaw))
+    return out_pose, state, control, velocity, hit_wall
+
+
+@wp.kernel
+def integrate_bicycle(
+    poses: wp.array(dtype=wp.transform),
+    motion: wp.array(dtype=wp.vec4), commands: wp.array(dtype=wp.vec4),
+    controls: wp.array(dtype=wp.vec3), collision: wp.array(dtype=int),
+    out_poses: wp.array(dtype=wp.transform), out_velocities: wp.array(dtype=wp.spatial_vector),
+    dt: float, mass: float, length: float, width: float, wheelbase: float,
+    friction: float, stiffness: float, drag: float, max_acceleration: float,
+    max_braking: float, steering_rate: float, speed_gain: float,
+    track_length: float, track_width: float,
+):
+    i = wp.tid()
+    pose, state, control, velocity, hit_wall = bicycle_step(
+        poses[i], motion[i], commands[i], controls[i],
+        dt, mass, length, width, wheelbase, friction, stiffness, drag, max_acceleration, max_braking, steering_rate, speed_gain, track_length, track_width)
+    out_poses[i] = pose
+    motion[i] = state
+    controls[i] = control
+    out_velocities[i] = velocity
+    collision[i] = hit_wall
+
+
+@wp.kernel
+def integrate_bicycle_fused(
+    poses: wp.array(dtype=wp.transform),
+    motion: wp.array(dtype=wp.vec4), commands: wp.array(dtype=wp.vec4),
+    controls: wp.array(dtype=wp.vec3), collision: wp.array(dtype=int),
+    out_poses: wp.array(dtype=wp.transform), out_velocities: wp.array(dtype=wp.spatial_vector),
+    dt: float, mass: float, length: float, width: float, wheelbase: float,
+    friction: float, stiffness: float, drag: float, max_acceleration: float,
+    max_braking: float, steering_rate: float, speed_gain: float,
+    track_length: float, track_width: float,
+    substeps: int,
+):
+    i = wp.tid()
+    pose = poses[i]
+    state = motion[i]
+    control = controls[i]
+    command = commands[i]
+    velocity = wp.spatial_vector()
+    hit_wall = int(0)
+    # Sequential integration stays local to this car; the physics dt is unchanged.
+    for _ in range(substeps):
+        pose, state, control, velocity, hit_wall = bicycle_step(
+            pose, state, command, control,
+            dt, mass, length, width, wheelbase, friction, stiffness, drag, max_acceleration, max_braking, steering_rate, speed_gain, track_length, track_width)
+    out_poses[i] = pose
+    motion[i] = state
+    controls[i] = control
+    out_velocities[i] = velocity
+    collision[i] = hit_wall

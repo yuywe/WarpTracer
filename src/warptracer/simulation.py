@@ -9,7 +9,7 @@ import warp as wp
 from .scene import Track, Vehicle, build_model
 from .driving import DRIVING_SCENARIOS, DriveConfig, apply_tire_forces, scripted_driver, write_command
 from .lidar import LidarRecording, MountedLidar
-from .lean import LeanState, integrate_bicycle
+from .lean import LeanState, integrate_bicycle, integrate_bicycle_fused
 
 
 @dataclass
@@ -23,7 +23,7 @@ class Trajectory:
 
 
 class Simulation:
-    def __init__(self, track=None, vehicle=None, scenario="drop", device=None, physics_hz=240, drive=None, lidar=None, engine="newton"):
+    def __init__(self, track=None, vehicle=None, scenario="drop", device=None, physics_hz=240, drive=None, lidar=None, engine="newton", num_envs=1):
         if not isinstance(physics_hz, int) or physics_hz <= 0:
             raise ValueError("physics_hz must be a positive integer")
         if lidar is not None and physics_hz % lidar.frequency:
@@ -32,6 +32,11 @@ class Simulation:
             raise ValueError("engine must be newton or lean")
         if engine == "lean" and scenario not in DRIVING_SCENARIOS:
             raise ValueError("Lean physics supports driving scenarios; drop/impact need Newton")
+        if not isinstance(num_envs, int) or num_envs < 1:
+            raise ValueError("num_envs must be a positive integer")
+        if engine == "newton" and num_envs != 1:
+            raise ValueError("Batched environments require lean physics")
+        self.num_envs = num_envs
         self.engine = engine
         self.driving = scenario in DRIVING_SCENARIOS
         default_track = Track(length=8, width=8) if scenario == "circle" else Track(length=12, width=6)
@@ -41,7 +46,7 @@ class Simulation:
         if self.driving:
             self.drive.validate_vehicle(self.vehicle)
             if physics_hz < 120:
-                raise ValueError("Driving support springs require physics_hz >= 120")
+                raise ValueError("Driving requires physics_hz >= 120")
         self.scenario, self.physics_hz = scenario, physics_hz
         self.dt = 1.0 / physics_hz
         if engine == "newton":
@@ -59,16 +64,17 @@ class Simulation:
                 raise ValueError("Lean enclosure must accommodate the car at all headings")
             self.model = SimpleNamespace(device=chosen_device)
             self.body = 0
-            self.state, self.next_state = LeanState(chosen_device), LeanState(chosen_device)
+            self.state, self.next_state = LeanState(chosen_device, num_envs), LeanState(chosen_device, num_envs)
             x = -self.track.length / 3 if scenario in ("accelerate-brake", "s-turn") else 0.0
             y = -min(1.3, self.track.width / 4) if scenario == "circle" else 0.0
             self.initial_pose = np.array([[x, y, self.drive.ride_height(self.vehicle), 0, 0, 0, 1]], dtype=np.float32)
-            self.lean_motion = wp.zeros(1, dtype=wp.vec4, device=chosen_device)
-            self.collision = wp.zeros(1, dtype=int, device=chosen_device)
-        self.device_commands = wp.zeros(1, dtype=wp.vec4, device=self.model.device)
+            self.initial_pose = np.repeat(self.initial_pose, num_envs, axis=0)
+            self.lean_motion = wp.zeros(num_envs, dtype=wp.vec4, device=chosen_device)
+            self.collision = wp.zeros(num_envs, dtype=int, device=chosen_device)
+        self.device_commands = wp.zeros(num_envs, dtype=wp.vec4, device=self.model.device)
         self._uploaded_command = None
-        self.applied_controls = wp.zeros(1, dtype=wp.vec3, device=self.model.device)
-        self.lidar = MountedLidar(self.track, self.vehicle, lidar, self.model.device) if lidar is not None else None
+        self.applied_controls = wp.zeros(num_envs, dtype=wp.vec3, device=self.model.device)
+        self.lidar = MountedLidar(self.track, self.vehicle, lidar, self.model.device, batch_size=num_envs) if lidar is not None else None
         self.lidar_stride = physics_hz // lidar.frequency if lidar is not None else 0
         self.reset()
 
@@ -118,21 +124,53 @@ class Simulation:
     def _upload_command(self):
         payload = (*self.command, self.target_speed)
         if payload != self._uploaded_command:
-            wp.launch(write_command, dim=1, inputs=[self.device_commands, wp.vec4(*payload)],
+            wp.launch(write_command, dim=self.num_envs, inputs=[self.device_commands, wp.vec4(*payload)],
                       device=self.model.device)
             self._uploaded_command = payload
+
+    def set_commands(self, commands):
+        """Upload per-car [throttle, brake, steering, target_speed] commands.
+
+        Shape is (num_envs, 4). A target of -1 selects direct throttle/brake;
+        a nonnegative target selects speed control. Values are checked/clamped.
+        For zero-copy GPU controllers, write device_commands on the same stream
+        and invalidate_command_cache() before calling scalar setters again.
+        """
+        values = np.array(commands, dtype=np.float32, copy=True)
+        if not self.driving or values.shape != (self.num_envs, 4) or not np.isfinite(values).all():
+            raise ValueError("Commands must be finite (num_envs, 4) in a driving scenario")
+        if np.any((values[:, 3] < 0) & (values[:, 3] != -1)):
+            raise ValueError("Target speeds must be -1 (manual) or nonnegative")
+        values[:, :2] = np.clip(values[:, :2], 0, 1)
+        values[:, 2] = np.clip(values[:, 2], -self.drive.max_steering, self.drive.max_steering)
+        self.device_commands.assign(values)
+        self.invalidate_command_cache()
+
+    def invalidate_command_cache(self):
+        self._uploaded_command = None
+
+    def _lean_inputs(self):
+        d, v = self.drive, self.vehicle
+        return [
+            self.state.body_q, self.lean_motion, self.device_commands,
+            self.applied_controls, self.collision, self.next_state.body_q, self.next_state.body_qd,
+            self.dt, v.mass, v.length, v.width, d.wheelbase, v.friction, d.lateral_stiffness,
+            d.rolling_drag, d.max_acceleration, d.max_braking, d.steering_rate, d.speed_gain,
+            self.track.length, self.track.width,
+        ]
+
+    def _fused_physics_steps(self, substeps):
+        inputs = self._lean_inputs()
+        # In-place output keeps the same pointers across every graph replay.
+        inputs[5], inputs[6] = self.state.body_q, self.state.body_qd
+        wp.launch(integrate_bicycle_fused, dim=self.num_envs, inputs=inputs + [substeps],
+                  device=self.model.device)
 
     def _physics_step(self):
         """One capture-safe substep; callers manage time and sensor scheduling."""
         if self.engine == "lean":
-            d, v = self.drive, self.vehicle
-            wp.launch(integrate_bicycle, dim=1, inputs=[
-                self.state.body_q, self.lean_motion, self.device_commands,
-                self.applied_controls, self.collision, self.next_state.body_q, self.next_state.body_qd,
-                self.dt, v.mass, v.length, v.width, d.wheelbase, v.friction, d.lateral_stiffness,
-                d.rolling_drag, d.max_acceleration, d.max_braking, d.steering_rate, d.speed_gain,
-                self.track.length, self.track.width,
-            ], device=self.model.device)
+            wp.launch(integrate_bicycle, dim=self.num_envs, inputs=self._lean_inputs(),
+                      device=self.model.device)
             self.state, self.next_state = self.next_state, self.state
             return
         self.state.clear_forces()
@@ -156,10 +194,15 @@ class Simulation:
             self.lidar.update(self.state, self.body, self.steps * self.dt)
 
     def snapshot(self):
-        return self.state.body_q.numpy()[self.body].copy(), self.state.body_qd.numpy()[self.body].copy()
+        q, qd = self.state.body_q.numpy(), self.state.body_qd.numpy()
+        if self.num_envs == 1:
+            return q[self.body].copy(), qd[self.body].copy()
+        return q.copy(), qd.copy()
 
     def run(self, duration=4.0, record_fps=30, record=True, controller=None):
         """Run from reset. Optional controller(sim, time) sets inputs before each step."""
+        if self.num_envs != 1:
+            raise ValueError("Recorded run() supports one car; use TransitionRunner for batches")
         if not np.isfinite(duration) or duration <= 0:
             raise ValueError("duration must be finite and positive")
         if not isinstance(record_fps, int) or record_fps <= 0 or self.physics_hz % record_fps:

@@ -1,4 +1,4 @@
-"""Repeatable single-car throughput measurements; run with python -m warptracer.benchmark."""
+"""Repeatable single/batched-car throughput measurements; run with python -m warptracer.benchmark."""
 import argparse
 import cProfile
 import io
@@ -21,14 +21,14 @@ from .simulation import Simulation
 CASES = ("physics", "lidar", "recording")
 
 
-def make_runner(case, backend, device, substeps, engine="lean", beams=LidarConfig.beams):
+def make_runner(case, backend, device, substeps, engine="lean", beams=LidarConfig.beams, num_envs=1, integrator="unfused"):
     lidar = None if case == "physics" else LidarConfig(beams=beams, frequency=240 // substeps)
-    sim = Simulation(scenario="circle", device=device, lidar=lidar, engine=engine)
-    return TransitionRunner(sim, backend=backend, substeps=substeps, controller="circle")
+    sim = Simulation(scenario="circle", device=device, lidar=lidar, engine=engine, num_envs=num_envs)
+    return TransitionRunner(sim, backend=backend, substeps=substeps, controller="circle", integrator=integrator)
 
 
 def validate_pair(eager, graph, transitions=90):
-    """Fail before timing if graph replay changes state or sensing."""
+    """Fail before timing if an execution variant changes any car or scan."""
     results = []
     for runner in (eager, graph):
         runner.reset()
@@ -38,6 +38,8 @@ def validate_pair(eager, graph, transitions=90):
         sim = runner.sim
         q, qd = sim.snapshot()
         result = [q, qd, sim.applied_controls.numpy().copy()]
+        if sim.engine == "lean":
+            result.extend([sim.lean_motion.numpy().copy(), sim.collision.numpy().copy()])
         if sim.lidar is not None:
             pose, values, valid = sim.lidar.snapshot()
             result.extend([pose, values, valid])
@@ -52,16 +54,28 @@ def validate_pair(eager, graph, transitions=90):
     graph.reset()
 
 
-def trial(runner, case, transitions, warmup, record_hz):
+def warm_up(runner, min_transitions, min_wall_seconds):
+    """Run actual work until both simulated-step and wall-clock minima are met."""
+    runner.reset()
+    wp.synchronize_device(runner.sim.model.device)
+    start = time.perf_counter()
+    count = 0
+    while count < min_transitions or time.perf_counter() - start < min_wall_seconds:
+        for _ in range(32):
+            runner.advance()
+        count += 32
+        wp.synchronize_device(runner.sim.model.device)
+    elapsed = time.perf_counter() - start
+    runner.reset()
+    wp.synchronize_device(runner.sim.model.device)
+    return count, elapsed
+
+
+def trial(runner, case, transitions, warmup, record_hz, warmup_wall_seconds=2.0):
     sim = runner.sim
     transition_hz = sim.physics_hz // runner.substeps
     record_stride = transition_hz // record_hz
-    runner.reset()
-    for _ in range(warmup):
-        runner.advance()
-    wp.synchronize_device(sim.model.device)
-    runner.reset()
-    wp.synchronize_device(sim.model.device)
+    warmup_count, warmup_elapsed = warm_up(runner, warmup, warmup_wall_seconds)
     records = []
 
     def sample():
@@ -102,50 +116,72 @@ def trial(runner, case, transitions, warmup, record_hz):
         "cpu_process_seconds": cpu_elapsed,
         # Event intervals include stream idle gaps; these are not summed kernel durations.
         "cuda_stream_seconds": wp.get_event_elapsed_time(*events, synchronize=False) / 1000 if events else None,
-        "physics_substeps_per_second": transitions * runner.substeps / elapsed,
-        "environment_transitions_per_second": transitions / elapsed,
+        "warmup_transitions": warmup_count, "warmup_wall_seconds": warmup_elapsed,
+        "physics_substeps_per_second": sim.num_envs * transitions * runner.substeps / elapsed,
+        "aggregate_environment_transitions_per_second": sim.num_envs * transitions / elapsed,
+        "batch_transitions_per_second": transitions / elapsed,
+        "environment_transitions_per_second": sim.num_envs * transitions / elapsed,
         "simulated_seconds_per_second": transitions * runner.substeps * sim.dt / elapsed,
         "recorded_frames": len(records),
-        "final_pose": q.tolist(), "final_velocity": qd.tolist(),
+        "checked_environments": sim.num_envs,
+        "final_pose": (q if sim.num_envs == 1 else q[0]).tolist(),
+        "final_velocity": (qd if sim.num_envs == 1 else qd[0]).tolist(),
     }
 
 
-def summarize(samples, transitions, substeps):
+def summarize(samples, transitions, substeps, num_envs=1):
     times = [sample["elapsed_seconds"] for sample in samples]
     median = statistics.median(times)
+    spread = max(times) / min(times)
     return {
         "median_seconds": median, "min_seconds": min(times), "max_seconds": max(times),
-        "median_physics_substeps_per_second": transitions * substeps / median,
-        "median_environment_transitions_per_second": transitions / median,
+        "max_min_ratio": spread,
+        "timing_variable": spread > 1.2,
+        "median_physics_substeps_per_second": num_envs * transitions * substeps / median,
+        "median_environment_transitions_per_second": num_envs * transitions / median,
+        "median_aggregate_environment_transitions_per_second": num_envs * transitions / median,
+        "median_batch_transitions_per_second": transitions / median,
+        "median_simulated_seconds_per_second_per_env": transitions * substeps / 240 / median,
     }
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Single-car eager/graph benchmark, with paired validation")
+    parser = argparse.ArgumentParser(description="Vehicle batch, fusion, and graph benchmark with parity validation")
     parser.add_argument("--device", default=None, help="Default: CUDA if available, else CPU")
     parser.add_argument("--physics", choices=("lean", "newton"), default="lean")
     parser.add_argument("--backend", choices=("auto", "eager", "graph", "both"), default="auto")
+    parser.add_argument("--integrator", choices=("auto", "unfused", "fused", "both"), default="auto",
+                        help="Default: fused for lean, unfused for Newton")
+    parser.add_argument("--envs", nargs="+", type=int, default=[1], help="Independent car counts to sweep")
     parser.add_argument("--cases", nargs="+", choices=CASES, default=list(CASES))
-    parser.add_argument("--seconds", type=float, default=10)
-    parser.add_argument("--warmup-seconds", type=float, default=2)
+    parser.add_argument("--seconds", type=float, default=10, help="Simulated seconds per car per trial")
+    parser.add_argument("--warmup-seconds", type=float, default=2, help="Minimum simulated warmup seconds")
+    parser.add_argument("--warmup-wall-seconds", type=float, default=2,
+                        help="Minimum real warmup seconds before EACH trial; excluded from timing")
     parser.add_argument("--trials", type=int, default=5)
     parser.add_argument("--substeps", type=int, default=4, help="Even physics substeps per transition")
-    parser.add_argument("--lidar-beams", type=int, default=LidarConfig.beams, help="Rays per scan (default: 108)")
+    parser.add_argument("--lidar-beams", type=int, default=LidarConfig.beams)
     parser.add_argument("--record-hz", type=int, default=30)
     parser.add_argument("--output", type=Path, default=Path("outputs/benchmark.json"))
-    parser.add_argument("--profile", action="store_true", help="Save a separate eager CPU-call profile")
+    parser.add_argument("--profile", action="store_true", help="Separate eager Python profile for the smallest batch")
     args = parser.parse_args(argv)
-    if args.trials < 1 or not np.isfinite((args.seconds, args.warmup_seconds)).all():
+    if args.trials < 1 or not np.isfinite((args.seconds, args.warmup_seconds, args.warmup_wall_seconds)).all():
         parser.error("Require positive trials and finite durations")
-    if args.seconds <= 0 or args.warmup_seconds <= 0:
-        parser.error("Measured duration and warmup must be positive")
+    if args.seconds <= 0 or args.warmup_seconds <= 0 or args.warmup_wall_seconds < 0:
+        parser.error("Measured/simulated warmup durations must be positive; wall warmup must be nonnegative")
     if args.substeps < 2 or args.substeps % 2 or 240 % args.substeps:
         parser.error("substeps must be an even divisor of 240")
-    if args.lidar_beams < 1:
-        parser.error("lidar-beams must be positive")
+    if args.lidar_beams < 1 or min(args.envs) < 1:
+        parser.error("lidar-beams and envs must be positive")
+    integrators = (["fused"] if args.physics == "lean" else ["unfused"]) if args.integrator == "auto" else (
+        ["unfused", "fused"] if args.integrator == "both" else [args.integrator])
+    env_counts = list(dict.fromkeys(args.envs))
+    if args.physics == "newton" and (env_counts != [1] or integrators != ["unfused"]):
+        parser.error("Newton supports one environment and unfused integration only")
     hz = 240 // args.substeps
-    if args.record_hz <= 0 or hz % args.record_hz:
-        parser.error("record-hz must be a positive divisor of transition frequency")
+    cases = list(dict.fromkeys(args.cases))
+    if args.record_hz <= 0 or ("recording" in cases and hz % args.record_hz):
+        parser.error("record-hz must be positive and divide transition frequency for recording")
     transitions = round(args.seconds * hz)
     warmup = round(args.warmup_seconds * hz)
     if min(transitions, warmup) < 1:
@@ -154,61 +190,79 @@ def main(argv=None):
     device = wp.get_device(args.device or ("cuda:0" if wp.is_cuda_available() else "cpu"))
     backends = (["eager", "graph"] if device.is_cuda else ["eager"]) if args.backend == "auto" else (
         ["eager", "graph"] if args.backend == "both" else [args.backend])
-    cases = list(dict.fromkeys(args.cases))
-    print(f"Device: {device.name}; physics: {args.physics}; 1 car; {args.substeps} physics substeps/transition; "
-          f"{hz} transitions per simulated second.", flush=True)
-    print(f"LiDAR cases: {args.lidar_beams} rays once per transition ({hz} Hz). "
-          f"{args.trials} trials, each after {warmup / hz:g} simulated seconds of warmup.", flush=True)
+    print(f"Device: {device.name}; physics: {args.physics}; environments: {env_counts}; "
+          f"{args.substeps} substeps/transition; {hz} transitions per simulated second.", flush=True)
+    print(f"LiDAR: {args.lidar_beams} rays at {hz} Hz. Warmup per trial: at least "
+          f"{args.warmup_wall_seconds:g} real seconds AND {warmup / hz:g} simulated seconds.", flush=True)
     if "graph" in backends and not device.is_cuda:
-        print("CPU graph replay validates capture behavior; it is not a CUDA performance measurement.", flush=True)
-    runners = {}
-    validations = {}
-    for case in cases:
-        for backend in backends:
-            runners[(case, backend)] = make_runner(case, backend, device, args.substeps, args.physics, args.lidar_beams)
-        if "graph" in backends:
-            eager = runners.get((case, "eager")) or make_runner(case, "eager", device, args.substeps, args.physics, args.lidar_beams)
-            validate_pair(eager, runners[(case, "graph")], transitions=max(hz, 2))
-            validations[case] = "passed"
-            print(f"Eager/graph parity passed: {case}", flush=True)
+        print("CPU API graph replay is not a CUDA performance measurement.", flush=True)
+    runners, validations = {}, []
+    for count in env_counts:
+        for case in cases:
+            reference = make_runner(case, "eager", device, args.substeps, args.physics,
+                                    args.lidar_beams, count, "unfused")
+            for integrator in integrators:
+                for backend in backends:
+                    key = (count, case, integrator, backend)
+                    runner = (reference if (integrator, backend) == ("unfused", "eager") else
+                              make_runner(case, backend, device, args.substeps, args.physics,
+                                          args.lidar_beams, count, integrator))
+                    runners[key] = runner
+                    if runner is not reference:
+                        validate_pair(reference, runner, transitions=max(hz, 2))
+                        validations.append({"environments": count, "case": case,
+                                            "integrator": integrator, "backend": backend,
+                                            "reference": "unfused/eager", "status": "passed"})
+                        print(f"Unfused/eager parity passed: {key}", flush=True)
     samples = {key: [] for key in runners}
     keys = list(runners)
-    # Rotate and reverse case order across trials to reduce a fixed ordering bias.
     for repeat in range(args.trials):
         order = keys[repeat % len(keys):] + keys[:repeat % len(keys)]
         if repeat % 2:
             order = order[::-1]
-        for case, backend in order:
-            result = trial(runners[(case, backend)], case, transitions, warmup, args.record_hz)
-            samples[(case, backend)].append(result)
-            print(f"trial {repeat+1}/{args.trials} {case:9s} {backend:5s}: "
+        for key in order:
+            count, case, integrator, backend = key
+            result = trial(runners[key], case, transitions, warmup, args.record_hz, args.warmup_wall_seconds)
+            samples[key].append(result)
+            print(f"trial {repeat+1}/{args.trials} N={count} {case} {integrator}/{backend}: "
                   f"{result['elapsed_seconds']:.3f}s; "
-                  f"{result['physics_substeps_per_second']:.0f} substeps/s; "
-                  f"{result['environment_transitions_per_second']:.0f} transitions/s", flush=True)
+                  f"{result['aggregate_environment_transitions_per_second']:.0f} aggregate transitions/s; "
+                  f"{result['batch_transitions_per_second']:.0f} batch transitions/s", flush=True)
     report = {
+        "schema_version": 2,
         "device": str(device), "device_name": device.name, "platform": platform.platform(),
         "python": platform.python_version(), "versions": {p: version(p) for p in ("warp-lang", "newton", "numpy")},
-        "physics_engine": args.physics, "environments": 1, "physics_hz": 240, "substeps_per_transition": args.substeps,
+        "physics_engine": args.physics, "environment_counts": env_counts,
+        "environments": env_counts[0] if len(env_counts) == 1 else None,
+        "integrators": integrators, "physics_hz": 240, "substeps_per_transition": args.substeps,
         "transition_hz": hz, "lidar_hz": hz, "lidar_beams": args.lidar_beams,
         "record_hz": args.record_hz, "transitions_per_trial": transitions,
         "simulated_seconds_per_trial": transitions / hz, "warmup_seconds": warmup / hz,
-        "graph_validation": validations,
+        "minimum_warmup_wall_seconds": args.warmup_wall_seconds,
+        "validation": validations,
         "timing_scope": "Stepping, sensors, and optional host recording; excludes setup, warmup, reset, validation, HTML and disk writes",
+        "throughput_units": "environment transitions/s and physics substeps/s aggregate all cars; batch transitions/s counts runner advances",
+        "final_state_scope": "All cars checked finite; final_pose/final_velocity contain car zero only",
         "results": [],
     }
-    for case, backend in keys:
-        summary = summarize(samples[(case, backend)], transitions, args.substeps)
-        report["results"].append({"case": case, "backend": backend,
-                                  "graph_kind": runners[(case, backend)].graph_kind,
-                                  "summary": summary, "trials": samples[(case, backend)]})
-        print(f"MEDIAN {case:9s} {backend:5s}: {summary['median_physics_substeps_per_second']:.0f} "
-              f"substeps/s; {summary['median_environment_transitions_per_second']:.0f} transitions/s", flush=True)
+    for key in keys:
+        count, case, integrator, backend = key
+        summary = summarize(samples[key], transitions, args.substeps, count)
+        report["results"].append({"environments": count, "case": case, "integrator": integrator,
+                                  "backend": backend, "graph_kind": runners[key].graph_kind,
+                                  "summary": summary, "trials": samples[key]})
+        print(f"MEDIAN N={count} {case} {integrator}/{backend}: "
+              f"{summary['median_aggregate_environment_transitions_per_second']:.0f} aggregate transitions/s; "
+              f"{summary['median_batch_transitions_per_second']:.0f} batch transitions/s"
+              + (" [variable timing: max/min > 1.2]" if summary["timing_variable"] else ""), flush=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     if args.profile:
-        runner = runners.get(("lidar", "eager")) or make_runner("lidar", "eager", device, args.substeps, args.physics, args.lidar_beams)
+        runner = make_runner("lidar", "eager", device, args.substeps, args.physics,
+                             args.lidar_beams, min(env_counts), integrators[0])
         profile = cProfile.Profile()
-        profile.runcall(trial, runner, "lidar", min(transitions, hz), warmup, args.record_hz)
+        profile.runcall(trial, runner, "lidar", min(transitions, hz), warmup, args.record_hz,
+                        args.warmup_wall_seconds)
         profile.dump_stats(str(args.output.with_suffix(".prof")))
         stream = io.StringIO()
         pstats.Stats(profile, stream=stream).sort_stats("cumulative").print_stats(30)
