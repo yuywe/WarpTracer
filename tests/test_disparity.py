@@ -119,6 +119,54 @@ def test_unsupported_sensor_and_parameters_rejected():
                                        lidar=LidarConfig(mount_rpy=(0, 0, .2))))
     with pytest.raises(ValueError):
         DisparityConfig(max_speed=float("nan"))
+    with pytest.raises(ValueError, match="search sector"):
+        DisparityController(car(), DisparityConfig(search_degrees=.5))
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_corner_override_checks_its_own_filtered_clearance(device):
+    sim = car(device=device)
+    controller = DisparityController(sim)
+    angles = np.linspace(-135, 135, 108)
+    values = np.full((1, 108), 6., np.float32)
+    values[0, np.abs(angles) < 10] = 1.5
+    values[0, (angles < -30) & (angles > -90)] = .8
+    values[0, (angles > 65) & (angles < 90)] = .4
+    sim.lidar.result.values.assign(values)
+    sim.lidar.result.valid.assign(np.ones_like(values, dtype=np.int32))
+    controller.update()
+    angle, distance = controller.goals.numpy()[0]
+    ray = np.argmin(np.abs(np.deg2rad(angles) - angle))
+    assert controller.turns.numpy()[0] == 1
+    np.testing.assert_allclose(angle, np.deg2rad(angles[ray]), atol=1e-6)
+    np.testing.assert_allclose(distance, controller.filtered.numpy()[0, ray])
+    assert distance <= .4 + 1e-6
+    assert sim.device_commands.numpy()[0, 3] == 0
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_low_range_cap_does_not_latch_turn_in_clear_space(device):
+    sim = car(device=device)
+    controller = DisparityController(sim, DisparityConfig(range_cap=3.))
+    sim.lidar.result.valid.assign(np.ones((1, 108), np.int32))
+    sim.lidar.result.values.assign(np.full((1, 108), .8, np.float32))
+    controller.update()
+    assert controller.turns.numpy()[0] != 0
+    sim.lidar.result.values.assign(np.full((1, 108), 20., np.float32))
+    controller.update()
+    assert controller.turns.numpy()[0] == 0
+    assert abs(sim.device_commands.numpy()[0, 2]) < .03
+    assert sim.device_commands.numpy()[0, 3] > 0
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_direct_controller_update_allows_manual_override(device):
+    sim = car(device=device)
+    controller = DisparityController(sim)
+    controller.update()
+    assert sim.device_commands.numpy()[0, 3] > 0
+    sim.set_action(throttle=0, brake=0, steering=0)
+    np.testing.assert_array_equal(sim.device_commands.numpy()[0], [0, 0, 0, -1])
 
 
 def test_transition_recording_keeps_sensor_and_pose_timestamps():

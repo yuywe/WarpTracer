@@ -1,12 +1,12 @@
 # Validation
 
-Checked on 2026-10-02 with Linux x86-64, Python 3.12.14, Newton 1.6.0,
+Checked on 2026-10-05 with Linux x86-64, Python 3.12.14, Newton 1.6.0,
 Warp 1.17.0, and Viser 1.0.26, using the unchanged root uv.lock.
 
 ## Behavior and capture checks
 
-Full suite before the final recording check: **65 passed, 20 skipped**.
-The additional 40 Hz recording test and benchmark metadata checks pass separately.
+Full suite: **69 passed, 23 skipped** (CUDA unavailable).
+This includes the 40 Hz recording and disparity bug regression checks.
 
 The default scan is now 108 rays; both demo and benchmark accept
 `--lidar-beams 1080` for dense scans. Moving scans at both resolutions match
@@ -27,7 +27,7 @@ LiDAR. Unsafe odd substep counts and inconsistent sensor schedules are rejected.
 The benchmark independently checks eager/graph poses, velocities, applied
 controls, scan poses, ranges, masks, and device step counts before timing.
 
-Twenty CUDA tests were skipped in the local CPU-only environment. CPU graph replay
+Twenty-three CUDA tests were skipped in the local CPU-only environment. CPU graph replay
 uses Warp's CPU API capture. The user-supplied GPU benchmark below separately
 confirms lean CUDA graph/eager parity for its workload; it does not establish
 that the full CUDA test suite, the Newton CUDA backend, or the new fused/batched
@@ -35,6 +35,15 @@ CUDA paths pass.
 No automatic fallback hides capture errors.
 
 ## Disparity navigation
+
+The 2026-10-05 regression checks reproduce and prevent stale clearance after a
+corner-target override, a turn that never releases with a 3 m scoring cap, and
+manual commands being ignored after a direct controller update. An empty search
+sector is rejected. Corner targets now retain the filtered distance of the actual
+selected beam; braking uses that clearance as well as the forward corridor.
+Turn-release geometry uses sensor ranges independently of the scoring cap.
+The comparison with `uci-f1tenth/race_stack` is documented in `docs/navigation.md`;
+that implementation uses a sliding-window minimum rather than disparity extension.
 
 CPU tests cover extension in both directions, overlapping disparities, unchanged
 raw scans, steering toward the open side, braking for blocked/invalid scans,
@@ -48,7 +57,12 @@ A 60-second, 60 Hz recorded demo traveled about 51.6 m, peaked at 1.28 m/s, and
 finished moving at 0.54 m/s with zero wall-contact substeps. It exported HTML,
 NPZ and JSON, with 3,601 scans; its XY trajectory and speed trace were inspected.
 The headless navigation benchmark completed with 1 and 64 independent cars on
-CPU and passed reference validation. New controller CUDA execution and its
+CPU and passed reference validation. After the fixes, all eager/graph and
+fused/unfused combinations were checked again with those batch sizes over ten
+simulated seconds; the 60-second recorded demo again traveled 51.6 m with zero
+wall-contact substeps. These CPU timing runs used one trial and a shortened
+0.25-second real warmup; they are behavior/parity checks, not GPU performance data.
+New controller CUDA execution and its
 throughput still need to be checked on a GPU; CPU results do not establish those.
 
 The unmodified published simulation previously achieved 5.38 million aggregate

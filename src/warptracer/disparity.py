@@ -64,21 +64,22 @@ def extend_disparities(ranges: wp.array2d(dtype=float), valid: wp.array2d(dtype=
 def choose_command(ranges: wp.array2d(dtype=float), valid: wp.array2d(dtype=int),
                    filtered: wp.array2d(dtype=float), commands: wp.array(dtype=wp.vec4),
                    goals: wp.array(dtype=wp.vec2), turns: wp.array(dtype=float), beams: int, first: float, increment: float,
-                   search: float, cap: float, max_speed: float, max_steering: float,
+                   search: float, geometry_cap: float, max_speed: float, max_steering: float,
                    radius: float, half_length: float, mount_x: float, mount_y: float,
                    stop_margin: float, braking: float, reaction_time: float, turn_clearance: float):
     car = wp.tid()
     best_score = float(-1.0e10)
     angle = float(0.0)
     best_distance = float(0.0)
-    clearance = cap
-    left_clear = cap
-    right_clear = cap
+    clearance = geometry_cap
+    left_clear = geometry_cap
+    right_clear = geometry_cap
     left_space = float(0.0)
     right_space = float(0.0)
     for ray in range(beams):
         a = first + float(ray) * increment
-        d = usable_range(ranges, valid, car, ray, cap)
+        # Target scoring is capped, but turn hysteresis needs actual geometry.
+        d = usable_range(ranges, valid, car, ray, geometry_cap)
         if a > 0.5 and a < 1.57:
             left_space += d
         if a < -0.5 and a > -1.57:
@@ -112,16 +113,27 @@ def choose_command(ranges: wp.array2d(dtype=float), valid: wp.array2d(dtype=int)
         if right_space > left_space:
             turn = -1.0
     if turn != 0.0:
-        angle = turn * search
+        # Select a real beam inside the search sector and recheck its filtered
+        # distance. Never retain the old target's clearance after an override.
+        nearest = float(1.0e10)
+        for ray in range(beams):
+            a = first + float(ray) * increment
+            error = wp.abs(a - turn * search)
+            if wp.abs(a) <= search and error < nearest:
+                nearest = error
+                angle = a
+                best_distance = filtered[car, ray]
     turns[car] = turn
     steering = wp.clamp(angle, -max_steering, max_steering)
     available = wp.max(0.0, clearance - stop_margin)
+    target_clearance = best_distance + mount_x * wp.cos(angle) + mount_y * wp.sin(angle) - half_length
+    available = wp.min(available, wp.max(0.0, target_clearance - stop_margin))
     # Account for one scan period before braking. Existing speed control and
     # steering-rate limits still act at every physics substep.
     delay = braking * reaction_time
     speed = wp.min(max_speed / (1.0 + 2.0 * wp.abs(steering) / max_steering),
                    wp.sqrt(delay * delay + 2.0 * braking * available) - delay)
-    if best_distance <= stop_margin or (steering > 0.0 and left_clear < radius) or (steering < 0.0 and right_clear < radius):
+    if target_clearance <= stop_margin or (steering > 0.0 and left_clear < radius) or (steering < 0.0 and right_clear < radius):
         speed = 0.0
         steering = 0.0
     commands[car] = wp.vec4(0.0, 0.0, steering, speed)
@@ -147,6 +159,8 @@ class DisparityController:
         angles = self.first + np.arange(lc.beams) * self.increment
         if not np.any(np.abs(angles) < .35):
             raise ValueError("Disparity control requires LiDAR coverage within 20 degrees of forward")
+        if not np.any(np.abs(angles) <= np.deg2rad(self.config.search_degrees)):
+            raise ValueError("Disparity search sector must contain at least one LiDAR beam")
         self.filtered = wp.empty((sim.num_envs, lc.beams), dtype=float, device=sim.model.device)
         self.goals = wp.empty(sim.num_envs, dtype=wp.vec2, device=sim.model.device)
         self.turns = wp.zeros(sim.num_envs, dtype=float, device=sim.model.device)
@@ -167,7 +181,7 @@ class DisparityController:
             cfg.disparity_threshold, cap], device=sim.model.device)
         wp.launch(choose_command, dim=sim.num_envs, inputs=[
             ranges, valid, self.filtered, sim.device_commands, self.goals, self.turns,
-            beams, self.first, self.increment, np.deg2rad(cfg.search_degrees), cap,
+            beams, self.first, self.increment, np.deg2rad(cfg.search_degrees), sim.lidar.config.far,
             cfg.max_speed, sim.drive.max_steering, radius, sim.vehicle.length / 2,
             *sim.lidar.mount_position[:2], cfg.stop_margin,
             min(sim.drive.max_braking, sim.vehicle.friction * 9.81) * .5,
@@ -175,6 +189,7 @@ class DisparityController:
             2.0 * sim.drive.wheelbase / np.tan(sim.drive.max_steering) + sim.vehicle.length / 2 + cfg.stop_margin
             + cfg.max_speed * (sim.drive.max_steering / sim.drive.steering_rate
                                + 1.0 / sim.lidar.config.frequency)], device=sim.model.device)
+        sim.invalidate_command_cache()
 
     def __call__(self, sim, time):
         if sim is not self.sim:
@@ -183,4 +198,3 @@ class DisparityController:
             if sim.steps == 0:
                 self.reset()
             self.update()
-            sim.invalidate_command_cache()
