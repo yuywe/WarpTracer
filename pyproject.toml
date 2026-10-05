@@ -1,11 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "warptracer"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.0"
+description = "Minimal 3D track and rigid-body vehicle playground"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.10"
 dependencies = [
-    "matplotlib>=3.11.2",
-    "numpy>=2.5.3",
-    "warp-lang>=1.17.0",
+    "newton==1.6.0",
+    "numpy>=1.24",
+    "warp-lang==1.17.0",
+    "viser==1.0.26",
 ]
+
+[project.optional-dependencies]
+viz = ["viser==1.0.26"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+warptracer = "warptracer.cli:main"
+warptracer-demo = "warptracer.demo:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
