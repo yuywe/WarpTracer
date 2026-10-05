@@ -3,10 +3,11 @@
 Run from the repository root:
 
 ```bash
-uv run --locked --extra viz warptracer-demo --scenario disparity --device cuda:0 --seconds 30 --lidar-hz 60
+uv run warptracer demo
 ```
 
-Use `--device cpu` without CUDA. Open `outputs/disparity.html` for an interactive
+This runs 30 simulated seconds with 108 beams at 60 Hz, using CUDA when available
+and otherwise CPU. Open `outputs/disparity.html` for an interactive
 replay. The NPZ retains poses, applied controls and scans; the JSON records
 controller settings and `wall_contact_substeps`. This counter counts every
 physics substep touching a wall, including contacts inside a fused transition.
@@ -60,8 +61,8 @@ Reset produces a fresh initial scan and clears the corner-turn state. Control
 runs once per scan, with no scan copies to the CPU. Each batched car has separate
 commands and controller state and cannot see the other cars.
 
-The replay defaults to 30 Hz sensing/control. Set `--lidar-hz 60` for the benchmark
-rate. At 40 Hz, use `--lidar-hz 40 --record-fps 20`. Duration and recording intervals
+The demo and benchmark presets use 60 Hz sensing/control. At 40 Hz, use
+`--lidar-hz 40 --record-fps 20` for the demo. Duration and recording intervals
 must contain whole transitions, each with an even number of physics substeps.
 
 ```python
@@ -92,15 +93,13 @@ controller work as well as raycasting work.
 Calling `DisparityController.update()` directly also invalidates the scalar
 command cache, allowing subsequent manual setters to replace device commands.
 
-Use `--cases navigation` in `warptracer.benchmark` to measure physics, LiDAR and
-control together. Existing `physics`, `lidar` and `recording` cases keep their
-scripted circle controller so previous measurements remain comparable.
-
 On a Colab GPU runtime, compare navigation against the LiDAR baseline:
 
 ```bash
-uv run --locked python -u -m warptracer.benchmark --device cuda:0 --physics lean --backend graph --integrator fused --envs 1 64 256 --cases lidar navigation --seconds 100 --trials 3 --output outputs/navigation-benchmark.json
+uv run warptracer benchmark navigation
 ```
 
 This comparison measures both the added controller work and its changed vehicle
 trajectory. It is not an isolated timing of the disparity kernels.
+The preset writes `outputs/navigation.json`; see [benchmark presets](benchmarking.md)
+for its settings and result units.

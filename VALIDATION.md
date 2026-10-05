@@ -1,12 +1,27 @@
 # Validation
 
 Checked on 2026-10-05 with Linux x86-64, Python 3.12.14, Newton 1.6.0,
-Warp 1.17.0, and Viser 1.0.26, using the unchanged root uv.lock.
+Warp 1.17.0, and Viser 1.0.26. Dependency versions are unchanged; uv.lock now
+includes Viser in the base installation as well as the compatibility viz extra.
 
 ## Behavior and capture checks
 
-Full suite: **69 passed, 23 skipped** (CUDA unavailable).
+Full suite: **75 passed, 23 skipped** (CUDA unavailable).
 This includes the 40 Hz recording and disparity bug regression checks.
+
+## Run commands and presets
+
+The installed `warptracer` entry point was exercised with the README's exact
+`uv run warptracer demo` and `uv run warptracer benchmark` commands, without
+optional dependency flags. The default demo exported a 30-second navigation
+replay, 1,801 scans at 60 Hz, and zero wall-contact substeps. The default quick
+benchmark completed three trials for all six workload/execution combinations.
+These CPU runs verify the workflows, not new GPU performance.
+
+CLI tests check preset selection, explicit overrides, navigation vs. LiDAR
+workloads, fusion variants, recording, replay export, and immediate failure when
+a GPU preset is requested without CUDA. Both notebooks' code cells compile;
+actual hosted Colab execution remains untested here.
 
 The default scan is now 108 rays; both demo and benchmark accept
 `--lidar-beams 1080` for dense scans. Moving scans at both resolutions match
@@ -180,13 +195,14 @@ uv run --locked python -m warptracer.benchmark --device cpu --physics newton --b
 The physics-only lean graph trial is very short, so its rate is especially
 sensitive to timer resolution and machine load. CPU results are indicative,
 not a GPU speed claim. JSON reports retain individual trials and timing spread.
-The original demo scans at 30 Hz; benchmark sensing is twice that rate.
+The historical demo scanned at 30 Hz; current CLI demos and benchmark presets
+both default to 60 Hz sensing.
 
 ## Driving and playback (historical: 1080 rays)
 
 All three ten-second lean driving demos export Viser HTML, trajectory NPZ, and
 metadata JSON. Each has 301 body samples and 301 mounted scans with 1080 beams
-at the default 30 Hz, with all returns valid. Acceleration/braking peaks near
+at the then-default 30 Hz, with all returns valid. Acceleration/braking peaks near
 1.69 m/s and stops; the circle completes a lap; the S-turn changes steering
 direction and stops. The scene still uses one box car, one floor, and four walls.
 

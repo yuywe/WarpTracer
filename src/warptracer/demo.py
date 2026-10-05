@@ -1,4 +1,4 @@
-"""Run from the repository root: uv run --extra viz warptracer-demo."""
+"""Run from the repository root: uv run warptracer demo."""
 import argparse
 import json
 from pathlib import Path
@@ -10,10 +10,14 @@ from .lidar import LidarConfig
 from .disparity import DisparityConfig
 from .execution import TransitionRunner
 
+SCENARIOS = ("disparity", "accelerate-brake", "circle", "s-turn", "drop", "wall-impact")
+
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Flat rectangle and one box car with mounted LiDAR")
-    parser.add_argument("--scenario", choices=("disparity", "accelerate-brake", "circle", "s-turn", "drop", "wall-impact"), default="accelerate-brake")
+    parser = argparse.ArgumentParser(prog="warptracer demo",
+                                     description="30-second LiDAR navigation replay; choose a scenario or override a setting")
+    parser.add_argument("scenario_name", nargs="?", choices=SCENARIOS, help="Default: disparity")
+    parser.add_argument("--scenario", choices=SCENARIOS, help="Alias for the positional scenario")
     parser.add_argument("--backend", choices=("eager", "graph"), default="graph", help="Execution backend for disparity navigation")
     parser.add_argument("--max-speed", type=float, default=1.5, help="Disparity target speed limit in m/s")
     parser.add_argument("--physics", choices=("lean", "newton"), default="lean")
@@ -23,16 +27,20 @@ def main(argv=None):
     parser.add_argument("--record-fps", type=int, default=30)
     parser.add_argument("--no-lidar", action="store_true", help="Run the original vehicle-only scene")
     parser.add_argument("--lidar-beams", type=int, default=LidarConfig.beams, help="Rays per scan (default: 108)")
-    parser.add_argument("--lidar-hz", type=int, default=30, help="Scan rate, must divide physics Hz")
+    parser.add_argument("--lidar-hz", type=int, default=60, help="Scan rate (default: 60), must divide physics Hz")
     parser.add_argument("--headless", action="store_true", help="Skip replay and intermediate CPU copies")
     parser.add_argument("--output", type=Path, default=Path("outputs"))
     args = parser.parse_args(argv)
+    if args.scenario_name is not None and args.scenario is not None:
+        parser.error("Choose a positional scenario or --scenario, not both")
+    args.scenario = args.scenario or args.scenario_name or "disparity"
     if args.scenario == "disparity" and args.no_lidar:
         parser.error("Disparity navigation requires LiDAR")
     physics = "newton" if args.scenario in ("drop", "wall-impact") else args.physics
     sim = Simulation(engine=physics, scenario="drive" if args.scenario == "disparity" else args.scenario, device=args.device, physics_hz=args.physics_hz,
                      lidar=None if args.no_lidar else LidarConfig(beams=args.lidar_beams, frequency=args.lidar_hz))
-    duration = args.seconds if args.seconds is not None else (10.0 if sim.driving else 4.0)
+    duration = args.seconds if args.seconds is not None else (
+        30.0 if args.scenario == "disparity" else 10.0 if sim.driving else 4.0)
     runner = None
     if args.scenario == "disparity":
         runner = TransitionRunner(sim, controller="disparity", backend=args.backend,

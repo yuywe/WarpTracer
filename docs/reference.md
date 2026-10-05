@@ -14,7 +14,7 @@ second environment. Only LiDAR is instantiated; camera code is not used.
 | --- | --- |
 | Beam layout | 108 beams in one horizontal ring, -135° to +135°, ordered right to left |
 | Range | 0.021 m minimum, 30 m maximum |
-| Rate | 30 Hz, independently of pose recording rate |
+| Rate | CLI demos/presets: 60 Hz; Python `LidarConfig()`: 30 Hz; independent of pose recording rate |
 | Mount translation | 0.12 m forward, centered laterally, 0.025 m above the chassis top |
 | Mount orientation | Aligned with the chassis; follows its yaw, pitch, and roll |
 | Scanned surfaces | The same four wall boxes and floor as the physics scene |
@@ -116,8 +116,8 @@ Throttle and brake are clamped to [0, 1]; steering is in radians, positive left.
 A convenience controller accepts `sim.set_target_speed(1.0, steering=0.15)`.
 It calculates throttle/brake from forward-speed error on the simulation device.
 It is a proportional controller, so drag can leave a small steady speed error.
-A zero target applies the brake. This is the interface a later disparity-extender
-driver can use to request speed and steering.
+A zero target applies the brake. The disparity controller writes equivalent
+speed and steering targets directly into the device command buffer.
 
 For a recorded run, provide a callback that sets controls each step:
 
@@ -132,8 +132,9 @@ trajectory = sim.run(duration=4, controller=driver)
 `run()` starts from reset; it does not continue an earlier manual run. `reset()`
 clears controls and steering state. Without a callback, named driving scenarios
 use their scripted speed/steering requests; `drive` stays neutral. Headless
-physics makes no per-step state copies to the CPU. The demo loop launches each physics step. Use the [transition runner](benchmarking.md) for graph execution; batched
-environments are available through that runner.
+physics makes no per-step state copies to the CPU. Scripted demos launch each
+physics step; the disparity demo uses captured transitions by default. Use the
+[transition runner](benchmarking.md#python-batch-api) for graph execution and batches.
 
 `DriveConfig` in `driving.py` holds the force parameters, `Track` and `Vehicle`
 in `scene.py` hold dimensions/mass, `simulation.py` advances physics, and

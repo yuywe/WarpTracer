@@ -8,6 +8,7 @@ from pathlib import Path
 import platform
 import pstats
 import statistics
+import sys
 import time
 from importlib.metadata import version
 
@@ -20,6 +21,18 @@ from .simulation import Simulation
 
 
 CASES = ("physics", "lidar", "recording", "navigation")
+
+# Related settings live together so normal runs need only a preset name.
+PRESETS = {
+    "quick": dict(device=None, physics="lean", backend="both", integrator="fused",
+                  envs=[1], cases=["physics", "lidar", "recording"], seconds=10, trials=3),
+    "fusion": dict(device="cuda:0", physics="lean", backend="graph", integrator="both",
+                   envs=[1], cases=["physics", "lidar"], seconds=1000, trials=3),
+    "batches": dict(device="cuda:0", physics="lean", backend="graph", integrator="fused",
+                    envs=[1, 64, 256, 1024], cases=["physics", "lidar"], seconds=100, trials=3),
+    "navigation": dict(device="cuda:0", physics="lean", backend="graph", integrator="fused",
+                       envs=[1, 64, 256], cases=["lidar", "navigation"], seconds=100, trials=3),
+}
 
 
 def make_runner(case, backend, device, substeps, engine="lean", beams=LidarConfig.beams, num_envs=1, integrator="unfused"):
@@ -156,9 +169,13 @@ def summarize(samples, transitions, substeps, num_envs=1):
     }
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description="Vehicle batch, fusion, and graph benchmark with parity validation")
-    parser.add_argument("--device", default=None, help="Default: CUDA if available, else CPU")
+def main(argv=None, *, default_preset=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    parser = argparse.ArgumentParser(prog="warptracer benchmark",
+                                     description="Choose a preset; add options only to override its settings")
+    parser.add_argument("preset", nargs="?", choices=PRESETS, default=default_preset,
+                        help="quick: execution/replay; fusion: fused vs unfused; batches: car scaling; navigation: LiDAR vs controller")
+    parser.add_argument("--device", default=None, help="GPU presets require CUDA; quick selects CUDA if available, else CPU")
     parser.add_argument("--physics", choices=("lean", "newton"), default="lean")
     parser.add_argument("--backend", choices=("auto", "eager", "graph", "both"), default="auto")
     parser.add_argument("--integrator", choices=("auto", "unfused", "fused", "both"), default="auto",
@@ -176,6 +193,9 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, default=Path("outputs/benchmark.json"))
     parser.add_argument("--profile", action="store_true", help="Separate eager Python profile for the smallest batch")
     args = parser.parse_args(argv)
+    if args.preset is not None:
+        parser.set_defaults(**PRESETS[args.preset], output=Path("outputs") / f"{args.preset}.json")
+        args = parser.parse_args(argv)  # Explicit options override preset defaults.
     if args.trials < 1 or not np.isfinite((args.seconds, args.warmup_seconds, args.warmup_wall_seconds)).all():
         parser.error("Require positive trials and finite durations")
     if args.seconds <= 0 or args.warmup_seconds <= 0 or args.warmup_wall_seconds < 0:
@@ -198,9 +218,15 @@ def main(argv=None):
     if min(transitions, warmup) < 1:
         parser.error("Durations must each span at least one transition")
     wp.init()
-    device = wp.get_device(args.device or ("cuda:0" if wp.is_cuda_available() else "cpu"))
+    try:
+        device = wp.get_device(args.device or ("cuda:0" if wp.is_cuda_available() else "cpu"))
+    except ValueError:
+        parser.error(f"Device {args.device!r} is unavailable. In Colab select Runtime > Change runtime type > GPU, "
+                     "or use --device cpu for a CPU check (reduce --envs for large presets).")
     backends = (["eager", "graph"] if device.is_cuda else ["eager"]) if args.backend == "auto" else (
         ["eager", "graph"] if args.backend == "both" else [args.backend])
+    if args.preset is not None:
+        print(f"Preset: {args.preset}; report: {args.output}", flush=True)
     print(f"Device: {device.name}; physics: {args.physics}; environments: {env_counts}; "
           f"{args.substeps} substeps/transition; {hz} transitions per simulated second.", flush=True)
     print(f"LiDAR: {args.lidar_beams} rays at {hz} Hz. Warmup per trial: at least "
@@ -241,6 +267,7 @@ def main(argv=None):
                   f"{result['batch_transitions_per_second']:.0f} batch transitions/s", flush=True)
     report = {
         "schema_version": 2,
+        "preset": args.preset,
         "device": str(device), "device_name": device.name, "platform": platform.platform(),
         "python": platform.python_version(), "versions": {p: version(p) for p in ("warp-lang", "newton", "numpy")},
         "physics_engine": args.physics, "environment_counts": env_counts,

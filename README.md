@@ -1,136 +1,77 @@
 # WarpTracer
 
-A minimal racing simulator: **one box car, one flat floor, four walls, and
-vehicle-mounted LiDAR**. The car can accelerate, brake, and steer. Viser exports
-an interactive replay that you can orbit, pause, and scrub.
+A minimal racing simulator: one box car, one flat floor, four walls, and
+vehicle-mounted LiDAR. The car can accelerate, brake, and steer. A reactive
+disparity controller navigates from LiDAR; Viser exports an interactive replay.
 
-This branch is `performance-prototype`. Driving uses a lightweight Warp model;
-Newton is also available. Drive with scripted commands or a reactive LiDAR
-disparity extender. Independent cars can run in batches on the same static track.
+Work is on the `performance-prototype` branch. The default lean physics model
+keeps the car on flat ground. Newton is available for rigid-body experiments.
+Batched cars run independently and cannot see or collide with each other.
 
-## Run locally
+## Get started
 
-You need Git and uv. For a new checkout:
+Install Git and [uv](https://docs.astral.sh/uv/), then:
 
 ```bash
 git clone --branch performance-prototype https://github.com/yuywe/WarpTracer.git
 cd WarpTracer
+uv run warptracer demo
 ```
 
-If you already cloned the project, run these inside your existing repository:
+For an existing checkout, switch to `performance-prototype` and run
+`git pull --ff-only` before the demo. Run commands from the repository root;
+uv installs dependencies and uses one environment there. The first simulation
+run compiles kernels.
+
+The demo runs **30 simulated seconds of LiDAR navigation**, using lean physics,
+108 beams at 60 Hz, graph execution and fused substeps. It selects CUDA when
+available and otherwise uses CPU. Replay dependencies are included automatically.
+
+Open **`outputs/disparity.html`** in your browser to orbit, pause and scrub.
+The matching `.npz` saves poses, controls and scans; `.json` saves the settings.
+The replay shows recorded motion; moving its camera does not rerun physics.
+
+## Common commands
+
+| What you want | Command | Output |
+| --- | --- | --- |
+| LiDAR navigation replay | `uv run warptracer demo` | `outputs/disparity.html` |
+| Acceleration and braking check | `uv run warptracer demo accelerate-brake` | `outputs/accelerate-brake.html` |
+| Circle driving check | `uv run warptracer demo circle` | `outputs/circle.html` |
+| Quick performance check | `uv run warptracer benchmark` | `outputs/quick.json` |
+| LiDAR vs. disparity navigation | `uv run warptracer benchmark navigation` | `outputs/navigation.json` |
+| Independent car scaling | `uv run warptracer benchmark batches` | `outputs/batches.json` |
+| Fused vs. unfused physics | `uv run warptracer benchmark fusion` | `outputs/fusion.json` |
+
+The `navigation`, `batches` and `fusion` presets require CUDA by default.
+They fail immediately if a GPU is unavailable. The quick benchmark also works
+on CPU. See [benchmark presets and result units](docs/benchmarking.md).
+
+Only add an option when you need to change something:
 
 ```bash
-git fetch origin
-git switch performance-prototype
-git pull --ff-only origin performance-prototype
+uv run warptracer demo --seconds 60
 ```
 
-Then install dependencies and run the car:
+Use `uv run warptracer demo --help` or `uv run warptracer benchmark --help`
+for advanced settings. Existing `warptracer-demo` and Python module commands
+remain available.
 
-```bash
-uv sync --locked --extra viz
-uv run --locked --extra viz warptracer-demo --scenario accelerate-brake
-```
+## Colab
 
-Run all commands from the repository root so uv uses one environment.
-CUDA is selected when available; CPU also works. The first run compiles kernels.
+Select **Runtime → Change runtime type → GPU**, then open either notebook:
 
-Open **`outputs/accelerate-brake.html`** in your browser. The replay contains
-recorded motion and LiDAR; moving the camera does not rerun the simulation.
-The matching `.npz` stores arrays and `.json` stores configuration and timing.
+- [Driving replay](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/rigidbody_colab.ipynb): run setup, simulate, then display. Change `scenario` to try another drive.
+- [Benchmarks](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/benchmark_colab.ipynb): run setup, choose a `preset`, then read the results. It defaults to `navigation`.
 
-## Choose a driving scenario
+Both reuse the same checkout and root uv environment. Output streams into the
+cell. No command construction or physics settings need editing for normal runs.
 
-Replace `accelerate-brake` in the command above:
+## Details and development
 
-| Scenario | What the car does |
-| --- | --- |
-| `disparity` | Chooses steering and speed from LiDAR; turns away from walls |
-| `accelerate-brake` | Accelerates straight, then stops |
-| `circle` | Drives with constant left steering |
-| `s-turn` | Alternates left and right steering, then stops |
+- [Navigation behavior and limits](docs/navigation.md)
+- [Benchmark presets, timing, and batch API](docs/benchmarking.md)
+- [Vehicle, LiDAR, controls, and saved arrays](docs/reference.md)
+- [Validation results and model limits](VALIDATION.md)
 
-Each lasts ten simulated seconds. Add options to the same command:
-
-| Option | Effect |
-| --- | --- |
-| `--seconds 20` | Run for 20 simulated seconds |
-| `--device cpu` | Force CPU execution |
-| `--headless` | Skip HTML replay and intermediate recording |
-| `--lidar-beams 1080` | Restore dense scans (default: 108 rays) |
-| `--no-lidar` | Disable LiDAR |
-| `--physics newton` | Use the original Newton physics |
-
-The default lean model includes acceleration, braking, steering, sideways slip,
-grip limits, and stopping at walls. Height is fixed; suspension, roll/pitch, and
-uneven terrain are not modeled. The `drop` and `wall-impact` scenarios always use
-Newton.
-
-Try autonomous navigation and open **`outputs/disparity.html`**:
-
-```bash
-uv run --locked --extra viz warptracer-demo --scenario disparity --seconds 30 --lidar-hz 60
-```
-
-This uses a 1.5 m/s target-speed limit, slows for turns and obstacles, and reports
-wall-contact substeps. It needs LiDAR; `--max-speed` adjusts its speed limit.
-See [navigation behavior and limits](docs/navigation.md). The scene still has
-only the box chassis, floor, four walls, and LiDAR display.
-
-## Run in Colab
-
-Open the [driving notebook](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/rigidbody_colab.ipynb)
-and run its three code cells: **setup → simulate → display**.
-Change the scenario in the second cell to try another drive.
-Setup reuses the same clone and repository-root uv environment.
-The notebook defaults to disparity navigation and `cuda:0`; select a GPU runtime
-or explicitly change `device` to `"cpu"`. Output is streamed into the cell.
-
-## Measure performance
-
-From the repository root, run:
-
-```bash
-uv run --locked python -m warptracer.benchmark --device cuda:0 --backend both
-```
-
-Use `--device cpu` without an NVIDIA GPU, or open the
-[benchmark notebook in Colab](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/benchmark_colab.ipynb).
-
-The command compares ordinary execution (`eager`) with captured graph replay
-(`graph`). Lean benchmarks default to fused physics substeps, and warm up for
-at least two real seconds before each trial. Results go to **`outputs/benchmark.json`**.
-
-**One transition = four physics substeps.** The default benchmark runs one car at
-240 physics substeps per simulated second, with 108 LiDAR rays at 60 Hz.
-The driving replay uses 30 Hz LiDAR. Compare matching workloads and units.
-
-Compare fusion first, then sweep independent cars:
-
-```bash
-uv run --locked python -m warptracer.benchmark --device cuda:0 --backend graph --integrator both --envs 1 --cases physics lidar --seconds 1000 --output outputs/fusion.json
-uv run --locked python -m warptracer.benchmark --device cuda:0 --backend graph --integrator fused --envs 1 64 256 1024 --cases physics lidar --seconds 100 --output outputs/batches.json
-```
-
-**Aggregate transitions/s** counts all cars; **batch transitions/s** counts
-advances of the whole batch. Each car has its own state and scan, sharing the
-same static track geometry. See the [benchmark guide](docs/benchmarking.md)
-for 40 Hz sensing, timing interpretation, and the Python API.
-
-Include the LiDAR controller in a headless benchmark:
-
-```bash
-uv run --locked python -m warptracer.benchmark --device cuda:0 --backend graph --integrator fused --envs 1 64 256 --cases navigation --seconds 100 --output outputs/navigation.json
-```
-
-## Further details
-
-- [Vehicle, controls, LiDAR, and saved arrays](docs/reference.md)
-- [Benchmark options and graph execution](docs/benchmarking.md)
-- [Tests, measured results, and model limits](VALIDATION.md)
-
-Run the test suite with:
-
-```bash
-uv run --locked --extra viz --extra dev pytest -q
-```
+Run tests with `uv run --extra dev pytest -q`.

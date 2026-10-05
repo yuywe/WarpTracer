@@ -1,108 +1,99 @@
-# Benchmarking and graph execution
+# Benchmarks
 
 [Quick start](../README.md) · [Validation results](../VALIDATION.md)
 
-## Compare fusion
+## Choose a preset
 
 ```bash
-uv run --locked python -m warptracer.benchmark --device cuda:0 --backend graph --integrator both --envs 1 --cases physics lidar --seconds 1000 --output outputs/fusion.json
+uv run warptracer benchmark navigation
 ```
 
-Unfused integration launches a kernel for each physics substep. Fused integration
-runs the same substeps sequentially inside one kernel per transition, keeping
-each car's intermediate state local. Both retain the 1/240-second physics dt,
-steering rate limiting, speed control, grip, and collision checks on every substep.
-Only final state is written to the arrays. Commands stay fixed for the transition.
+Presets set the workload, car counts, execution mode, duration and output path.
+All use lean physics, 108 LiDAR beams, 240 Hz physics, 60 Hz transitions and three
+trials. Every trial warms up for at least two real and two simulated seconds.
 
-Graph execution captures the sequence once and replays it. Fusion reduces the
-number of operations inside that graph; these are separate optimizations.
-`--backend both` also measures eager Python submission.
+| Preset | Comparison | Cars | Simulated seconds per trial | Output |
+| --- | --- | --- | ---: | --- |
+| `quick` (default) | Eager vs. graph; physics, LiDAR, recording | 1 | 10 | `outputs/quick.json` |
+| `navigation` | LiDAR baseline vs. live disparity control | 1, 64, 256 | 100 | `outputs/navigation.json` |
+| `batches` | Physics and LiDAR as car count increases | 1, 64, 256, 1024 | 100 | `outputs/batches.json` |
+| `fusion` | Fused vs. unfused physics; physics and LiDAR | 1 | 1000 | `outputs/fusion.json` |
 
-Lean benchmarks default to `--integrator fused`. Pass `--integrator unfused`
-to compare with earlier reports. Newton supports only unfused, single-car runs.
-Driving replay demos and `Simulation.step()` still use single-step integration.
+`quick` chooses CUDA when available, otherwise CPU, and uses fused physics.
+The other presets require CUDA and use graph replay; `navigation` and `batches`
+use fused physics. Select a GPU runtime in Colab. For a small CPU check use
+`uv run warptracer benchmark`; CPU timings do not measure GPU performance.
 
-## Sweep independent cars
+Duration is **per car**. Batched cars have independent states and scans in copies
+of the same static enclosure. They do not interact. Physics/LiDAR/recording cases
+use scripted circle commands. Navigation consumes scans to choose controls, so
+its comparison includes both controller work and the changed trajectory.
+These benchmarks contain no learning, policy inference, rewards or auto-resets.
 
-```bash
-uv run --locked python -m warptracer.benchmark --device cuda:0 --backend graph --integrator fused --envs 1 64 256 1024 --cases physics lidar --seconds 100 --output outputs/batches.json
-```
+## Read the results
 
-One physics thread advances each car; ray casting spans cars and beams. The
-batch shares one immutable wall/floor mesh. Cars live in independent copies of
-that enclosure: they neither collide with nor see each other. Vehicle and track
-parameters are shared; state, controls, collisions, and scans are separate.
-The benchmark gives all cars the same scripted circle commands. Tests also use
-different per-car commands to check isolation.
+Each run prints progress and writes its JSON report. Repeating a preset overwrites
+its previous report; copy it or choose `--output` to keep multiple runs.
 
-`--seconds` is simulated duration **per car**, not total duration across the batch.
-There are no policy inference, rewards, auto-resets, or RL training in this test.
-
-## Units and defaults
-
-| Setting / field | Meaning |
+| Metric | Meaning |
 | --- | --- |
-| Physics | 240 substeps per simulated second |
-| `--substeps 4` | Four sequential physics updates per transition |
-| LiDAR | 108 rays, one scan per transition; 60 Hz by default |
-| `--lidar-beams 1080` | Restore the earlier dense scan workload |
-| `--envs 1` | One car by default; accepts a list for sweeps |
-| `--trials 5` | Five trials per configuration |
-| Aggregate environment transitions/s | Cars × batch transitions ÷ wall time |
-| Batch transitions/s | Runner advances ÷ wall time, also transitions/s per car |
-| Physics substeps/s | Cars × transitions × substeps ÷ wall time |
-| Simulated seconds/s per environment | Simulation speed relative to real time for each car |
+| Batch transitions/s | Advances of the entire batch per wall-clock second; also the rate per car |
+| Aggregate transitions/s | Batch transitions/s × number of cars |
+| Aggregate physics substeps/s | Aggregate transitions/s × substeps per transition |
+| Simulated seconds/s per car | Simulation speed relative to real time |
+| `timing_variable` | Slowest/fastest trial time exceeds 1.2; does not identify a cause |
 
-To use **40 Hz LiDAR**, add `--substeps 6` to either headless command above.
-For the recording case at 40 Hz, also use `--record-hz 20` or `40`.
-The recording rate must divide the transition rate; headless cases ignore it.
+One transition normally contains **four 1/240-second physics substeps and one
+LiDAR scan**. Thus control and sensing run at 60 Hz. Count transitions separately
+from physics substeps when comparing simulators.
 
-For a matched ray-count comparison, repeat an identical command with
-`--lidar-beams 108` and `--lidar-beams 1080`, using different output files.
-At 108 rays the angular spacing is about 2.52°. Spatial resolution and navigation
-quality still need evaluation; ten times fewer rays does not imply ten times
-higher overall throughput.
+Elapsed time includes Python submission, GPU waiting, physics, sensing and any
+recording copies. It excludes setup, compilation, validation, warmup, reset and
+disk writes. It is end-to-end throughput, not pure kernel throughput.
 
-## Warmup and measurement
+## Change a setting only when needed
 
-Before **each trial**, the runner executes until both minima are satisfied:
-`--warmup-wall-seconds 2` real seconds and `--warmup-seconds 2` simulated seconds.
-Work is submitted in chunks containing a full trial's transition count and
-synchronized between chunks, matching headless measurement submission. Both
-minima are checked after each chunk, so warmup can exceed the requested duration
-by a full chunk. Warmup exercises physics/sensing without host recording copies.
-The report saves actual warmup duration and count. Reset and synchronization
-follow warmup, outside the timed region. Longer warmup may help exercise the GPU,
-but does not guarantee stable clocks or explain earlier timing variation.
+Options override preset settings. For example, keep the navigation workload but
+run one car:
 
-Every fused or graph variant is checked against unfused eager execution before
-timing: all cars' poses, velocities, motion states, controls, collision flags,
-scan poses, ranges, masks, and device step counts must agree within tolerance.
-The reference uses the same batch size; separate tests compare batch entries
-against independent single-car simulations.
+```bash
+uv run warptracer benchmark navigation --envs 1
+```
 
-Measured time includes Python submission, GPU waiting, stepping, sensing, and
-optional host recording. Throughput is end-to-end, not pure GPU kernel throughput. It excludes
-construction, compilation, warmup, reset, parity validation, HTML export, and
-disk writes. Cases are `physics`, `lidar`, and `recording`; omit `--cases` to
-run all three. Add `--cases navigation` to measure disparity control plus physics
-and LiDAR; this case uses live scan feedback instead of scripted circle commands.
-Recording copies and retains all cars' states/scans at the
-recording rate, so use headless cases for large, long-running batch sweeps.
+| Option | Use |
+| --- | --- |
+| `--seconds 1000` | Change simulated duration per trial |
+| `--envs 1 64` | Choose independent car counts |
+| `--trials 5` | Change repeats per configuration |
+| `--device cpu` | Explicit CPU execution; use small batches and short durations |
+| `--lidar-beams 1080` | Dense scan comparison |
+| `--substeps 6` | 40 Hz control and sensing; recording also needs `--record-hz 20` or `40` |
+| `--output outputs/my-run.json` | Save to a different path |
 
-Reports use schema version 2. Each result carries environment count, integrator,
-backend, case, individual trials, median, min/max, and max/min ratio. A ratio above
-1.2 produces a `timing_variable` flag; it is a diagnostic, not a statistical test.
-The `validation` list replaces the old `graph_validation` mapping.
-The older `environment_transitions_per_second` field remains as an alias for
-aggregate throughput. Final states are checked for every car, but only car zero
-is stored in each trial's `final_pose` and `final_velocity`.
+Use `uv run warptracer benchmark --help` for all options. Low-level module
+commands remain supported for custom experiments, including Newton (one car,
+unfused integration). Their original defaults are preserved when no preset is
+given.
 
-CUDA event intervals include stream idle gaps and are not summed kernel durations.
-`--profile` runs a separate eager Python call profile for the smallest requested
-batch; it includes that extra run's warmup and does not profile CUDA kernels.
+## Graphs, fusion and validation
 
-## Python API
+Eager execution submits operations from Python each transition. Graph execution
+captures the operation sequence once and replays it. Unfused physics launches a
+kernel per substep; fused physics advances those same substeps inside one kernel.
+Graph replay and fusion work together. Both preserve the physics timestep,
+steering rate limits, tire grip and collision checks at every substep.
+
+Every fused or graph variant is compared against unfused eager execution before
+timing. Validation checks all cars' poses, velocities, controls, motion states,
+contact counts, scans and clocks; navigation also checks filtered scans and goals.
+Separate tests compare batch entries against independent single-car runs.
+
+Warmup submits full-trial chunks and checks both duration minima between chunks,
+so it can overshoot by one chunk. The report records the actual warmup. CUDA event
+intervals include stream idle gaps; they are not summed kernel durations.
+`--profile` adds a separate eager Python profile, not a CUDA kernel profile.
+
+## Python batch API
 
 ```python
 import numpy as np
@@ -113,31 +104,24 @@ from warptracer.simulation import Simulation
 sim = Simulation(scenario="drive", engine="lean", device="cuda:0", num_envs=64,
                  lidar=LidarConfig(frequency=40))
 runner = TransitionRunner(sim, backend="graph", integrator="fused", substeps=6)
-
-# Columns: throttle, brake, steering radians, target speed m/s.
-# A target of -1 selects direct throttle/brake; >= 0 selects speed control.
 commands = np.zeros((64, 4), dtype=np.float32)
 commands[:, 2] = np.linspace(-.2, .2, 64)
 commands[:, 3] = 1.0
 sim.set_commands(commands)
 for _ in range(40):
     runner.advance()
-poses, velocities = sim.snapshot()  # explicit host copy: (64, 7), (64, 6)
+poses, velocities = sim.snapshot()  # Host copy: (64, 7), (64, 6)
 sensor_poses, ranges, valid = sim.lidar.snapshot()  # (64, 7), (64, 108), (64, 108)
 runner.reset()
 ```
 
-Scalar setters broadcast to all cars. GPU controllers can write the stable
-`sim.device_commands` buffer directly on the same stream; call
-`sim.invalidate_command_cache()` before returning to scalar setters.
-LiDAR `result.values` and `result.valid` remain device arrays shaped
-`(num_envs, beams)`. Buffers are reused each transition.
+Command columns are throttle, brake, steering radians and target speed m/s.
+Target speed `-1` selects direct throttle/brake; `>= 0` selects speed control.
+Scalar setters broadcast to all cars. Device controllers can write the stable
+command buffer on the simulation stream; invalidate the command cache before
+returning to scalar setters. LiDAR device buffers are reused each transition.
 
 The runner owns stepping/reset; do not interleave `sim.step()` or `sim.reset()`.
-Reset currently resets the whole batch. Collision flags describe the final
-physics substep, not a latched episode termination. `Simulation.run()` and Viser
-exports support one car; use the runner for batches.
-
-Use `--device cpu` without CUDA. Warp's CPU API capture can test graph behavior,
-but CPU timings are not GPU throughput measurements. Automatic backend selection
-uses both eager/graph on CUDA and eager on CPU.
+Reset affects the whole batch. Collision flags describe the final substep;
+contact counters accumulate all contacting substeps. Recorded demos support one
+car. Use the runner for batches.
