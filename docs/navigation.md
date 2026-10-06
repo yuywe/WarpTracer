@@ -44,6 +44,13 @@ These are prototype heuristics for the flat enclosure, not a collision guarantee
 or a racing policy. There is no reversing/recovery planner: a blocked or narrow
 situation can leave the car stopped. No map, localization, reward or PPO is used.
 
+For the elevated oval, use `uv run warptracer demo oval`. The room corner rule
+is disabled on this continuous loop. The selected clear ray is converted to a
+bicycle steering angle with a 2 m bounded lookahead (`steering_lookahead` in the
+Python config), instead of using ray bearing directly as steering. Targets still
+come entirely from LiDAR: there is no centerline-following controller or map
+input. The scanner stays aligned with the tilted chassis. See [track details](tracks.md).
+
 We also reviewed the controller in
 [uci-f1tenth/race_stack](https://github.com/uci-f1tenth/race_stack/blob/main/disparity_extender/disparity_extender/disparity_extender.py).
 Despite its name, that version selects the center of a sliding window with the

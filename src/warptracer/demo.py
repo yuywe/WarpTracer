@@ -9,8 +9,9 @@ from .simulation import Simulation
 from .lidar import LidarConfig
 from .disparity import DisparityConfig
 from .execution import TransitionRunner
+from .terrain import OvalTrack
 
-SCENARIOS = ("disparity", "accelerate-brake", "circle", "s-turn", "drop", "wall-impact")
+SCENARIOS = ("oval", "disparity", "accelerate-brake", "circle", "s-turn", "drop", "wall-impact")
 
 
 def main(argv=None):
@@ -34,15 +35,19 @@ def main(argv=None):
     if args.scenario_name is not None and args.scenario is not None:
         parser.error("Choose a positional scenario or --scenario, not both")
     args.scenario = args.scenario or args.scenario_name or "disparity"
-    if args.scenario == "disparity" and args.no_lidar:
+    navigation = args.scenario in ("disparity", "oval")
+    if navigation and args.no_lidar:
         parser.error("Disparity navigation requires LiDAR")
+    if args.scenario == "oval" and args.physics != "lean":
+        parser.error("The oval demo currently uses lean road-following physics")
     physics = "newton" if args.scenario in ("drop", "wall-impact") else args.physics
-    sim = Simulation(engine=physics, scenario="drive" if args.scenario == "disparity" else args.scenario, device=args.device, physics_hz=args.physics_hz,
+    sim = Simulation(track=OvalTrack() if args.scenario == "oval" else None,
+                     engine=physics, scenario="drive" if navigation else args.scenario, device=args.device, physics_hz=args.physics_hz,
                      lidar=None if args.no_lidar else LidarConfig(beams=args.lidar_beams, frequency=args.lidar_hz))
     duration = args.seconds if args.seconds is not None else (
-        30.0 if args.scenario == "disparity" else 10.0 if sim.driving else 4.0)
+        120.0 if args.scenario == "oval" else 30.0 if navigation else 10.0 if sim.driving else 4.0)
     runner = None
-    if args.scenario == "disparity":
+    if navigation:
         runner = TransitionRunner(sim, controller="disparity", backend=args.backend,
                                   integrator="fused" if physics == "lean" else "unfused",
                                   substeps=sim.lidar_stride,
@@ -51,6 +56,14 @@ def main(argv=None):
     if runner is not None:
         from dataclasses import asdict
         trajectory.metadata["disparity"] = asdict(runner.navigator.config)
+    if sim.oval:
+        trajectory.metadata["completed_laps"] = None
+        if not args.headless:
+            a, b = sim.track.center_axes
+            phase = np.unwrap(np.arctan2(trajectory.poses[:, 1] / b, trajectory.poses[:, 0] / a))
+            progress = max(0.0, float((phase[-1] - phase[0]) / (2 * np.pi)))
+            trajectory.metadata["lap_progress"] = progress
+            trajectory.metadata["completed_laps"] = int(progress)
     args.output.mkdir(parents=True, exist_ok=True)
     stem = args.output / (args.scenario + ("_headless" if args.headless else ""))
     arrays = dict(times=trajectory.times, poses=trajectory.poses,
@@ -75,7 +88,12 @@ def main(argv=None):
         scans = trajectory.lidar
         print(f"LiDAR: {scans.ranges.shape[1]} beams at {args.lidar_hz} Hz; "
               f"{len(scans.times)} saved scans; {100 * scans.valid.mean():.1f}% valid returns.")
-    print(f"Physics: {sim.engine}; one box chassis, one floor, four walls.")
+    if sim.oval:
+        print(f"Physics: {sim.engine}; one box chassis, one oval road, two continuous barriers.")
+        if not args.headless:
+            print(f"Completed laps: {trajectory.metadata['completed_laps']}; elevation range: {np.ptp(trajectory.poses[:, 2]):.3f} m.")
+    else:
+        print(f"Physics: {sim.engine}; one box chassis, one floor, four walls.")
     if runner is not None and physics == "lean":
         print(f"Wall-contact substeps: {trajectory.metadata['wall_contact_substeps']}")
 

@@ -16,12 +16,15 @@ trials. Every trial warms up for at least two real and two simulated seconds.
 | --- | --- | --- | ---: | --- |
 | `quick` (default) | Eager vs. graph; physics, LiDAR, recording | 1 | 10 | `outputs/quick.json` |
 | `navigation` | LiDAR baseline vs. live disparity control | 1, 64, 256 | 100 | `outputs/navigation.json` |
+| `oval` | Physics, LiDAR and disparity on the elevated loop | 1, 64, 256 | 100 | `outputs/oval-benchmark.json` |
 | `batches` | Physics and LiDAR as car count increases | 1, 64, 256, 1024 | 100 | `outputs/batches.json` |
 | `fusion` | Fused vs. unfused physics; physics and LiDAR | 1 | 1000 | `outputs/fusion.json` |
 
 `quick` chooses CUDA when available, otherwise CPU, and uses fused physics.
 The other presets require CUDA and use graph replay; `navigation` and `batches`
-use fused physics. Select a GPU runtime in Colab. For a small CPU check use
+use fused physics, as does `oval`. Only the `oval` preset uses the elevated track;
+the existing presets keep the room workload for comparable measurements.
+Select a GPU runtime in Colab. For a small CPU check use
 `uv run warptracer benchmark`; CPU timings do not measure GPU performance.
 
 Duration is **per car**. Batched cars have independent states and scans in copies
@@ -69,6 +72,7 @@ uv run warptracer benchmark navigation --envs 1
 | `--lidar-beams 1080` | Dense scan comparison |
 | `--substeps 6` | 40 Hz control and sensing; recording also needs `--record-hz 20` or `40` |
 | `--output outputs/my-run.json` | Save to a different path |
+| `--track oval` | Use the elevated loop in a custom lean workload |
 
 Use `uv run warptracer benchmark --help` for all options. Low-level module
 commands remain supported for custom experiments, including Newton (one car,

@@ -8,6 +8,7 @@ from dataclasses import dataclass, asdict
 
 import numpy as np
 import warp as wp
+from .terrain import OvalTrack
 
 
 @dataclass(frozen=True)
@@ -18,12 +19,13 @@ class DisparityConfig:
     stop_margin: float = 0.3
     search_degrees: float = 80.0
     range_cap: float = 6.0
+    steering_lookahead: float = 2.0
 
     def __post_init__(self):
         if not np.isfinite(list(asdict(self).values())).all():
             raise ValueError("Disparity parameters must be finite")
-        if min(self.max_speed, self.disparity_threshold, self.stop_margin, self.range_cap) <= 0:
-            raise ValueError("Speed, threshold, stop margin and range cap must be positive")
+        if min(self.max_speed, self.disparity_threshold, self.stop_margin, self.range_cap, self.steering_lookahead) <= 0:
+            raise ValueError("Speed, threshold, stop margin, range cap and lookahead must be positive")
         if self.safety_margin < 0 or not 0 < self.search_degrees < 90:
             raise ValueError("Require nonnegative safety margin and search angle in (0, 90)")
 
@@ -66,7 +68,8 @@ def choose_command(ranges: wp.array2d(dtype=float), valid: wp.array2d(dtype=int)
                    goals: wp.array(dtype=wp.vec2), turns: wp.array(dtype=float), beams: int, first: float, increment: float,
                    search: float, geometry_cap: float, max_speed: float, max_steering: float,
                    radius: float, half_length: float, mount_x: float, mount_y: float,
-                   stop_margin: float, braking: float, reaction_time: float, turn_clearance: float):
+                   stop_margin: float, braking: float, reaction_time: float, turn_clearance: float,
+                   wheelbase: float, lookahead: float):
     car = wp.tid()
     best_score = float(-1.0e10)
     angle = float(0.0)
@@ -124,7 +127,12 @@ def choose_command(ranges: wp.array2d(dtype=float), valid: wp.array2d(dtype=int)
                 angle = a
                 best_distance = filtered[car, ray]
     turns[car] = turn
-    steering = wp.clamp(angle, -max_steering, max_steering)
+    steering = angle
+    if lookahead > 0.0:
+        # Treat the chosen clear ray as a target at a bounded lookahead. This
+        # converts heading error to a bicycle steering angle on a narrow loop.
+        steering = wp.atan2(2.0 * wheelbase * wp.sin(angle), wp.max(.1, wp.min(best_distance, lookahead)))
+    steering = wp.clamp(steering, -max_steering, max_steering)
     available = wp.max(0.0, clearance - stop_margin)
     target_clearance = best_distance + mount_x * wp.cos(angle) + mount_y * wp.sin(angle) - half_length
     available = wp.min(available, wp.max(0.0, target_clearance - stop_margin))
@@ -141,7 +149,7 @@ def choose_command(ranges: wp.array2d(dtype=float), valid: wp.array2d(dtype=int)
 
 
 class DisparityController:
-    """Forward, horizontal LiDAR only; one independent controller per car.
+    """LiDAR aligned with the chassis; one independent controller per car.
 
     filtered and goals are borrowed device arrays for inspection. update() must
     run on the same stream as the scanner and vehicle. No CPU scan copies occur.
@@ -186,9 +194,11 @@ class DisparityController:
             *sim.lidar.mount_position[:2], cfg.stop_margin,
             min(sim.drive.max_braking, sim.vehicle.friction * 9.81) * .5,
             1.0 / sim.lidar.config.frequency,
-            2.0 * sim.drive.wheelbase / np.tan(sim.drive.max_steering) + sim.vehicle.length / 2 + cfg.stop_margin
+            (0.0 if isinstance(sim.track, OvalTrack) else
+             2.0 * sim.drive.wheelbase / np.tan(sim.drive.max_steering) + sim.vehicle.length / 2 + cfg.stop_margin
             + cfg.max_speed * (sim.drive.max_steering / sim.drive.steering_rate
-                               + 1.0 / sim.lidar.config.frequency)], device=sim.model.device)
+                               + 1.0 / sim.lidar.config.frequency)),
+            sim.drive.wheelbase, cfg.steering_lookahead if isinstance(sim.track, OvalTrack) else 0.0], device=sim.model.device)
         sim.invalidate_command_cache()
 
     def __call__(self, sim, time):

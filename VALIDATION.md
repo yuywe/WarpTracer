@@ -1,12 +1,12 @@
 # Validation
 
-Checked on 2026-10-05 with Linux x86-64, Python 3.12.14, Newton 1.6.0,
+Checked on 2026-10-06 UTC with Linux x86-64, Python 3.12.14, Newton 1.6.0,
 Warp 1.17.0, and Viser 1.0.26. Dependency versions are unchanged; uv.lock now
 includes Viser in the base installation as well as the compatibility viz extra.
 
 ## Behavior and capture checks
 
-Full suite: **75 passed, 23 skipped** (CUDA unavailable).
+Full suite: **90 passed, 27 skipped** (CUDA unavailable).
 This includes the 40 Hz recording and disparity bug regression checks.
 
 ## Run commands and presets
@@ -42,7 +42,7 @@ LiDAR. Unsafe odd substep counts and inconsistent sensor schedules are rejected.
 The benchmark independently checks eager/graph poses, velocities, applied
 controls, scan poses, ranges, masks, and device step counts before timing.
 
-Twenty-three CUDA tests were skipped in the local CPU-only environment. CPU graph replay
+Twenty-seven CUDA tests were skipped in the local CPU-only environment. CPU graph replay
 uses Warp's CPU API capture. The user-supplied GPU benchmark below separately
 confirms lean CUDA graph/eager parity for its workload; it does not establish
 that the full CUDA test suite, the Newton CUDA backend, or the new fused/batched
@@ -83,6 +83,31 @@ throughput still need to be checked on a GPU; CPU results do not establish those
 The unmodified published simulation previously achieved 5.38 million aggregate
 transitions/s on the user's Tesla T4 with 256 cars and 108-ray LiDAR at 60 Hz.
 That report used scripted commands; it is not a disparity-controller measurement.
+
+## Elevated oval
+
+`uv run warptracer demo oval` exported the 120-second replay with 7,201 scans,
+all valid. The car traveled about 130.5 m and completed 4.03 laps of angular
+progress, with zero barrier-contact substeps and a 0.400 m height range. Peak
+speed was 1.28 m/s; final speed was 1.23 m/s. The shared track geometry, recorded
+path and elevation trace were inspected. This was a CPU workflow/behavior check,
+not a GPU throughput measurement.
+
+Tests require multiple complete laps and zero contacts at 30, 40 and 60 Hz.
+They compare vehicle height/normal against the analytic surface, check mounted
+LiDAR tilt and world vertical velocity, and raycast the sampled road to within
+1 mm of its analytic height. Barrier meshes have closed seams and nondegenerate
+triangles. Outer and inner impacts keep the full chassis inside the lane, stop
+velocity, and clear contact counters on reset.
+
+Three distinct tilted/tangent spawns are compared against an unfused/eager
+reference across all four CPU execution combinations, including scans, controls,
+goals and contacts. Reset preserves their initial headings. The short demo and
+oval benchmark preset tests verify output/track metadata and that benchmark
+reports do not overwrite demo metadata. CUDA oval tests are skipped locally;
+the GPU oval preset still needs to be run on Colab.
+The ten-second CPU oval benchmark also passed full-state reference validation
+with 1 and 64 cars, using one trial and a shortened 0.25-second real warmup.
 
 ## Fusion, batches, and wall-clock warmup
 
@@ -213,12 +238,13 @@ tested here.
 
 ## Model limits
 
-Lean is a flat-ground dynamic bicycle with illustrative parameters, two
-friction-limited axle forces, an implicit lateral/yaw prediction, and fixed
-height. Its rectangular wall check clamps the rotated chassis footprint and
-stops velocity. It does not simulate suspension, roll/pitch, free fall,
-calibrated tire slip curves, wheel spin, reverse throttle, or terrain following.
-Newton remains available for the earlier force/contact behavior.
+Lean uses a planar dynamic bicycle with illustrative parameters, two
+friction-limited axle forces and an implicit lateral/yaw prediction. Height is
+fixed in the room; the oval constrains height/tilt to its road surface and reports
+vertical motion. Chassis-footprint checks stop velocity at room walls or oval
+barriers. The force model does not simulate gravity along slopes, suspension,
+airborne motion, calibrated tire slip curves, wheel spin, or reverse throttle.
+Newton remains available for the earlier room force/contact behavior.
 
 LiDAR is instantaneous and noise-free, using the unchanged sensor package.
 The host vehicle is excluded; static wall/floor geometry is shared with playback.

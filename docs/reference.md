@@ -17,14 +17,15 @@ second environment. Only LiDAR is instantiated; camera code is not used.
 | Rate | CLI demos/presets: 60 Hz; Python `LidarConfig()`: 30 Hz; independent of pose recording rate |
 | Mount translation | 0.12 m forward, centered laterally, 0.025 m above the chassis top |
 | Mount orientation | Aligned with the chassis; follows its yaw, pitch, and roll |
-| Scanned surfaces | The same four wall boxes and floor as the physics scene |
+| Scanned surfaces | Room: walls/floor; oval: road and continuous barriers |
 | Host vehicle | Excluded from the ray-casting mesh |
 | Replay | Up to 180 returns and 30 ray lines; all beams are saved |
 
-The static sensor mesh is built once from `Track.barriers()`, so wall dimensions
+The room's static sensor mesh is built once from `Track.barriers()`, so wall dimensions
 and positions match physics and playback. A floor patch extends beyond the walls
 by the maximum sensing range. This covers floor hits while the car is inside the
 enclosure. The added ray-casting mesh has 50 triangles and is never rendered.
+The oval instead scans the shared road/barrier mesh described in [tracks](tracks.md).
 
 Each scan uses the composed **world-from-body × body-from-sensor** transform.
 The pose and ray-casting kernels run on the simulation device; sensing adds no
@@ -70,23 +71,27 @@ until the next scan, while pose frames follow their own timeline.
 Both backends use the same single 0.52 × 0.26 × 0.12 m, 3.2 kg box, rectangular
 track, controls, LiDAR, and playback. Driving uses a 12 × 6 m clear area,
 or 8 × 8 m for the circle demo. There are no wheel meshes or joints.
+Lean additionally supports the elevated oval through `OvalTrack`, with road-following
+height/tilt and checks of the chassis footprint at both barriers. Newton currently
+supports the room only.
 
 | Part | Lean backend | Newton baseline |
 | --- | --- | --- |
-| Motion | Forward/sideways velocity and yaw rate; dynamic bicycle | Six-degree-of-freedom rigid body |
+| Motion | Planar bicycle; surface-following height/tilt on the oval | Six-degree-of-freedom rigid body |
 | Tire forces | Two axles with slip-velocity damping and shared longitudinal/lateral grip budgets | Four tire points with friction limited by spring support |
 | Steering | Front axle, ±0.418 rad limit, 1.5 rad/s rate limit | Same limits |
 | Acceleration/braking | Grip-limited propulsion; brake opposes forward motion | Tire forces |
-| Support | Fixed height, yaw-only pose | Spring/damper support |
-| Walls | Rotated box footprint clamped inside the enclosure; velocity stopped on collision | Newton contacts |
+| Support | Height/normal constrained to road; flat in the room | Spring/damper support |
+| Walls | Chassis footprint contained inside the room or oval lane; stop on contact | Newton contacts |
 | Integration | One Warp kernel per substep, or fused substeps via TransitionRunner | Tire kernel, collision pipeline, XPBD solver |
 | Sensors/viewer | Existing 3D LiDAR and Viser playback | Same |
 
 Lean uses an implicit lateral/yaw force prediction to handle stiffness at low
 speeds, then clips forces to the available grip. It is an illustrative racing
-model, not calibrated F1TENTH dynamics. It has no suspension, roll/pitch,
-free fall, wheel spin, Ackermann linkage, reverse throttle, or terrain following.
-Terrain height/tilt can be added separately later. Newton still provides the
+model, not calibrated F1TENTH dynamics. It has no suspension, free fall, wheel
+spin, Ackermann linkage, or reverse throttle. The oval adds constrained terrain
+height/tilt without changing the planar tire force model; it does not model
+gravity along slopes. Newton still provides the
 earlier free-body checks. The fixed lean height uses the original nominal ride
 height; spring/damper and track-width parameters otherwise do not affect lean
 dynamics. The lean collision flag describes the latest substep.

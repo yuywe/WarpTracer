@@ -7,6 +7,7 @@ import numpy as np
 import warp as wp
 
 from .scene import Track, Vehicle, build_model
+from .terrain import OvalTrack
 from .driving import DRIVING_SCENARIOS, DriveConfig, apply_tire_forces, scripted_driver, write_command
 from .lidar import LidarRecording, MountedLidar
 from .lean import LeanState, integrate_bicycle, integrate_bicycle_fused
@@ -43,6 +44,15 @@ class Simulation:
         self.track = track or (default_track if self.driving else Track())
         self.vehicle = vehicle or Vehicle()
         self.drive = drive or DriveConfig()
+        self.oval = isinstance(self.track, OvalTrack)
+        if self.oval and engine != "lean":
+            raise ValueError("Oval road following currently requires lean physics")
+        self.road_parameters = (wp.vec4(self.track.lane_width, self.track.elevation,
+                                       self.track.frequency, self.drive.ride_height(self.vehicle))
+                                if self.oval else wp.vec4())
+        self.wall_padding = (self.track.length / 2 * (1 - np.cos(np.pi / self.track.segments))
+                             + self.vehicle.height * self.track.elevation * self.track.frequency / 4
+                             if self.oval else 0.0)
         if self.driving:
             self.drive.validate_vehicle(self.vehicle)
             if physics_hz < 120:
@@ -74,6 +84,14 @@ class Simulation:
             x = float(np.clip(x, -0.99 * limit_x, 0.99 * limit_x))
             y = float(np.clip(y, -0.99 * limit_y, 0.99 * limit_y))
             self.initial_pose = np.array([[x, y, self.drive.ride_height(self.vehicle), 0, 0, 0, 1]], dtype=np.float32)
+            if self.oval:
+                padding = self.wall_padding
+                radius = np.hypot(self.vehicle.length, self.vehicle.width) / 2 + padding
+                a, b = self.track.length / 2, self.track.width / 2
+                ia, ib = self.track.inner_axes
+                if radius * (a / b + ia / ib) >= self.track.lane_width:
+                    raise ValueError("Oval lane must accommodate the car's conservative footprint")
+                self.initial_pose = self.track.pose(-np.pi / 2, self.drive.ride_height(self.vehicle))[None]
             self.initial_pose = np.repeat(self.initial_pose, num_envs, axis=0)
             self.lean_motion = wp.zeros(num_envs, dtype=wp.vec4, device=chosen_device)
             self.collision = wp.zeros(num_envs, dtype=int, device=chosen_device)
@@ -96,7 +114,11 @@ class Simulation:
             for state in (self.state, self.next_state):
                 state.body_q.assign(self.initial_pose)
                 state.body_qd.zero_()
-            self.lean_motion.zero_()
+            motion = np.zeros((self.num_envs, 4), np.float32)
+            # Initial headings can differ, including tilted centerline spawns.
+            qx, qy, qz, qw = self.initial_pose[:, 3:].T
+            motion[:, 3] = np.arctan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
+            self.lean_motion.assign(motion)
             self.collision.zero_()
             self.wall_contact_substeps.zero_()
         self.steps = 0
@@ -166,6 +188,7 @@ class Simulation:
             self.dt, v.mass, v.length, v.width, d.wheelbase, v.friction, d.lateral_stiffness,
             d.rolling_drag, d.max_acceleration, d.max_braking, d.steering_rate, d.speed_gain,
             self.track.length, self.track.width,
+            int(self.oval), self.road_parameters, self.wall_padding,
         ]
 
     def _fused_physics_steps(self, substeps):
@@ -285,6 +308,7 @@ class Simulation:
             "steps_per_second": total_steps / elapsed,
             "timing_includes_pose_recording": record,
             "track": asdict(self.track), "vehicle": asdict(self.vehicle),
+            "track_kind": "oval" if self.oval else "room",
             "drive": asdict(self.drive) if self.driving else None,
             "lidar": ({**asdict(self.lidar.config), "mount_position": self.lidar.mount_position,
                        "frame": "X forward, Y left, Z up", "pose_layout": "x,y,z,qx,qy,qz,qw",

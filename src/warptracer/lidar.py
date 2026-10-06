@@ -8,6 +8,8 @@ import numpy as np
 import warp as wp
 
 from racesense3d import box, from_quads, lidar
+from racesense3d.core import Scene
+from .terrain import OvalTrack
 
 
 @dataclass(frozen=True)
@@ -83,13 +85,16 @@ class MountedLidar:
         self.rays = config.rays()
         self.mount_position = config.mount_position or (0.12, 0.0, vehicle.height / 2 + 0.025)
         self.mount = wp.transform(self.mount_position, wp.quat_rpy(*config.mount_rpy))
-        # Cover every possible floor hit within range while the car is in the enclosure.
-        x, y = track.length / 2 + config.far, track.width / 2 + config.far
-        quads = [[(-x, -y, 0), (x, -y, 0), (x, y, 0), (-x, y, 0)]]
-        for position, dimensions in track.barriers():
-            center, half_size = np.asarray(position), np.asarray(dimensions) / 2
-            quads.extend(box(center - half_size, center + half_size))
-        self.scene = from_quads(quads, device=device)
+        if isinstance(track, OvalTrack):
+            self.scene = Scene(*track.mesh(), device=device)
+        else:
+            # Cover every possible floor hit within range inside the enclosure.
+            x, y = track.length / 2 + config.far, track.width / 2 + config.far
+            quads = [[(-x, -y, 0), (x, -y, 0), (x, y, 0), (-x, y, 0)]]
+            for position, dimensions in track.barriers():
+                center, half_size = np.asarray(position), np.asarray(dimensions) / 2
+                quads.extend(box(center - half_size, center + half_size))
+            self.scene = from_quads(quads, device=device)
         self.sensor = self.scene.sensor(self.rays, batch_size=batch_size, near=config.near, far=config.far)
         self.poses = wp.empty(batch_size, dtype=wp.transform, device=device)
         self.timestamp = 0.0

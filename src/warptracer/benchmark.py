@@ -18,6 +18,7 @@ import warp as wp
 from .execution import TransitionRunner
 from .lidar import LidarConfig
 from .simulation import Simulation
+from .terrain import OvalTrack
 
 
 CASES = ("physics", "lidar", "recording", "navigation")
@@ -32,12 +33,16 @@ PRESETS = {
                     envs=[1, 64, 256, 1024], cases=["physics", "lidar"], seconds=100, trials=3),
     "navigation": dict(device="cuda:0", physics="lean", backend="graph", integrator="fused",
                        envs=[1, 64, 256], cases=["lidar", "navigation"], seconds=100, trials=3),
+    "oval": dict(device="cuda:0", physics="lean", backend="graph", integrator="fused", track="oval",
+                 envs=[1, 64, 256], cases=["navigation"], seconds=100, trials=3,
+                 output=Path("outputs/oval-benchmark.json")),
 }
 
 
-def make_runner(case, backend, device, substeps, engine="lean", beams=LidarConfig.beams, num_envs=1, integrator="unfused"):
+def make_runner(case, backend, device, substeps, engine="lean", beams=LidarConfig.beams, num_envs=1, integrator="unfused", track="room"):
     lidar = None if case == "physics" else LidarConfig(beams=beams, frequency=240 // substeps)
-    sim = Simulation(scenario="circle", device=device, lidar=lidar, engine=engine, num_envs=num_envs)
+    sim = Simulation(track=OvalTrack() if track == "oval" else None,
+                     scenario="circle", device=device, lidar=lidar, engine=engine, num_envs=num_envs)
     return TransitionRunner(sim, backend=backend, substeps=substeps,
                             controller="disparity" if case == "navigation" else "circle", integrator=integrator)
 
@@ -174,9 +179,10 @@ def main(argv=None, *, default_preset=None):
     parser = argparse.ArgumentParser(prog="warptracer benchmark",
                                      description="Choose a preset; add options only to override its settings")
     parser.add_argument("preset", nargs="?", choices=PRESETS, default=default_preset,
-                        help="quick: execution/replay; fusion: fused vs unfused; batches: car scaling; navigation: LiDAR vs controller")
+                        help="quick: execution/replay; fusion: fused vs unfused; batches: car scaling; navigation: room control; oval: elevated track control")
     parser.add_argument("--device", default=None, help="GPU presets require CUDA; quick selects CUDA if available, else CPU")
     parser.add_argument("--physics", choices=("lean", "newton"), default="lean")
+    parser.add_argument("--track", choices=("room", "oval"), default="room", help="Preset chooses the track")
     parser.add_argument("--backend", choices=("auto", "eager", "graph", "both"), default="auto")
     parser.add_argument("--integrator", choices=("auto", "unfused", "fused", "both"), default="auto",
                         help="Default: fused for lean, unfused for Newton")
@@ -194,7 +200,7 @@ def main(argv=None, *, default_preset=None):
     parser.add_argument("--profile", action="store_true", help="Separate eager Python profile for the smallest batch")
     args = parser.parse_args(argv)
     if args.preset is not None:
-        parser.set_defaults(**PRESETS[args.preset], output=Path("outputs") / f"{args.preset}.json")
+        parser.set_defaults(**{"output": Path("outputs") / f"{args.preset}.json", **PRESETS[args.preset]})
         args = parser.parse_args(argv)  # Explicit options override preset defaults.
     if args.trials < 1 or not np.isfinite((args.seconds, args.warmup_seconds, args.warmup_wall_seconds)).all():
         parser.error("Require positive trials and finite durations")
@@ -209,6 +215,8 @@ def main(argv=None, *, default_preset=None):
     env_counts = list(dict.fromkeys(args.envs))
     if args.physics == "newton" and (env_counts != [1] or integrators != ["unfused"]):
         parser.error("Newton supports one environment and unfused integration only")
+    if args.physics == "newton" and args.track == "oval":
+        parser.error("Oval road following currently requires lean physics")
     hz = 240 // args.substeps
     cases = list(dict.fromkeys(args.cases))
     if args.record_hz <= 0 or ("recording" in cases and hz % args.record_hz):
@@ -237,13 +245,13 @@ def main(argv=None, *, default_preset=None):
     for count in env_counts:
         for case in cases:
             reference = make_runner(case, "eager", device, args.substeps, args.physics,
-                                    args.lidar_beams, count, "unfused")
+                                    args.lidar_beams, count, "unfused", track=args.track)
             for integrator in integrators:
                 for backend in backends:
                     key = (count, case, integrator, backend)
                     runner = (reference if (integrator, backend) == ("unfused", "eager") else
                               make_runner(case, backend, device, args.substeps, args.physics,
-                                          args.lidar_beams, count, integrator))
+                                          args.lidar_beams, count, integrator, track=args.track))
                     runners[key] = runner
                     if runner is not reference:
                         validate_pair(reference, runner, transitions=max(hz, 2))
@@ -271,6 +279,7 @@ def main(argv=None, *, default_preset=None):
         "device": str(device), "device_name": device.name, "platform": platform.platform(),
         "python": platform.python_version(), "versions": {p: version(p) for p in ("warp-lang", "newton", "numpy")},
         "physics_engine": args.physics, "environment_counts": env_counts,
+        "track_kind": args.track, "track": asdict(runners[keys[0]].sim.track),
         "environments": env_counts[0] if len(env_counts) == 1 else None,
         "integrators": integrators, "physics_hz": 240, "substeps_per_transition": args.substeps,
         "transition_hz": hz, "lidar_hz": hz, "lidar_beams": args.lidar_beams,
@@ -300,7 +309,7 @@ def main(argv=None, *, default_preset=None):
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     if args.profile:
         runner = make_runner("lidar", "eager", device, args.substeps, args.physics,
-                             args.lidar_beams, min(env_counts), integrators[0])
+                             args.lidar_beams, min(env_counts), integrators[0], track=args.track)
         profile = cProfile.Profile()
         profile.runcall(trial, runner, "lidar", min(transitions, hz), warmup, args.record_hz,
                         args.warmup_wall_seconds)
