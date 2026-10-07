@@ -1,5 +1,10 @@
 """Fixed-size transitions, executed eagerly or replayed from a Warp graph."""
+from functools import lru_cache
+
+import numpy as np
 import warp as wp
+
+from .terrain import OvalTrack
 
 
 @wp.kernel
@@ -109,3 +114,45 @@ class ScanRunner(TransitionRunner):
     def _operations(self):
         self.sim.lidar.update(self.sim.state, self.sim.body, 0.0)
         wp.launch(advance_clock, dim=1, inputs=[self.clock, self.substeps], device=self.sim.model.device)
+
+
+@lru_cache(maxsize=8)
+def _centerline_path(track, ride_height):
+    """Shared host preprocessing; upload one compact loop, never frames x cars."""
+    poses = np.array([track.pose(a, ride_height) for a in
+                      np.linspace(-np.pi / 2, 3 * np.pi / 2, 4096, endpoint=False)])
+    poses.flags.writeable = False
+    return poses
+
+
+@wp.kernel
+def _replay_poses(path: wp.array(dtype=wp.transform), offsets: wp.array(dtype=int),
+                  clock: wp.array(dtype=int), substeps: int, poses: wp.array(dtype=wp.transform)):
+    car = wp.tid()
+    # Two path samples per transition: a complete loop every 2048 scans.
+    frame = (offsets[car] + 2 * (clock[0] // substeps + 1)) % path.shape[0]
+    poses[car] = path[frame]
+
+
+class MovingScanRunner(ScanRunner):
+    """Prescribed tilted centerline poses, identical for all sensing backends.
+
+    This is a scan-only workload, with no simulated dynamics or policy. Cars
+    start at distinct phases; path replay and mount composition stay on-device.
+    """
+    def __init__(self, sim, **options):
+        if not isinstance(sim.track, OvalTrack) or sim.engine != "lean":
+            raise ValueError("Moving scans require the lean oval track")
+        host_path = _centerline_path(sim.track, sim.drive.ride_height(sim.vehicle))
+        offsets = np.arange(sim.num_envs, dtype=np.int64) * len(host_path) // sim.num_envs
+        sim.initial_pose[:] = host_path[offsets]
+        self.path = wp.array(host_path, dtype=wp.transform, device=sim.model.device)
+        self.offsets = wp.array(offsets.astype(np.int32), dtype=int, device=sim.model.device)
+        super().__init__(sim, **options)
+
+    def _operations(self):
+        sim = self.sim
+        wp.launch(_replay_poses, dim=sim.num_envs, inputs=[self.path, self.offsets, self.clock,
+                  self.substeps], outputs=[sim.state.body_q], device=sim.model.device)
+        sim.lidar.update(sim.state, sim.body, 0.0)
+        wp.launch(advance_clock, dim=1, inputs=[self.clock, self.substeps], device=sim.model.device)

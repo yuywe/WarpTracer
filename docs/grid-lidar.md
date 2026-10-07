@@ -82,6 +82,11 @@ iterations and exhaustion counts. Counts are kept on the device and copied only
 for explicit inspection after timing. Warmup/reset scans are excluded from trial
 counts; demo counts include its initial scan.
 
+Optional sampling caches retain the four grid values for one ray until it leaves
+its current bilinear patch. Fresh interpolation preserves the same implicit
+surfaces and convergence tolerance. Default scans remain uncached pending GPU
+measurements; `benchmark scale` tests both variants alongside the mesh baseline.
+
 Device scan buffers and graph capture are reused. EDT runs once during setup,
 outside benchmark timing; rays, vehicle poses and scans stay on the device.
 The unchanged `racesense3d` package supplies the mesh reference.
@@ -117,11 +122,14 @@ remain a limitation; ordinary range errors and exhaustion counts must be read
 alongside them. Finer sampling can improve geometry but costs preprocessing and
 memory, and does not guarantee identical grazing decisions.
 
-The CPU demo completes multiple laps with zero contacts. GPU speed still needs
-the Colab comparison. The user's earlier T4 results measured the deleted
-cell-traversal backend, not this EDT marcher; they are historical evidence in
-[VALIDATION.md](../VALIDATION.md). A height field is not automatically faster
-than a BVH mesh. Keep the mesh baseline while evaluating speed and accuracy.
+The CPU demo completes multiple laps with zero contacts. The user's T4 EDT run
+measured grid/mesh navigation throughput ratios of 1.091x / 1.075x / 1.161x at
+1 / 64 / 256 cars. Fixed-scan ratios were 0.782x / 0.972x / 1.279x. Those results
+precede the optional sample cache and do not predict 4,096-car or PPO throughput.
+Both that run and the slower deleted traversal backend are recorded in
+[VALIDATION.md](../VALIDATION.md). Keep the mesh baseline while evaluating speed
+and accuracy, and use `benchmark scale` for identical moving poses and larger
+batches.
 
 Only the oval adapter is wired into `Simulation`. The underlying `DistanceField`
 accepts equally shaped `[nx, ny]` NumPy arrays for height samples and binary road/
@@ -140,5 +148,5 @@ uv run warptracer benchmark grid --grid-cell-size .02
 The oval adapter requires sample spacing no larger than one quarter of barrier
 thickness and caps generated fields at four million samples. Python callers use
 `LidarConfig(backend="grid", grid_cell_size=.025, frequency=60)` on `OvalTrack`.
-Benchmark schema 4 records `lidar_algorithm = "edt-sphere-tracing"` so old grid
-reports can be distinguished from the replacement.
+Benchmark schema 5 records `lidar_algorithm = "edt-sphere-tracing"` and the
+`grid_sample_cache` field distinguishes uncached/cached timing results.

@@ -209,7 +209,7 @@ def test_short_grid_commands_report_sensor_geometry_and_real_work(tmp_path):
           "--trials", "1", "--warmup-seconds", ".1", "--warmup-wall-seconds", "0", "--output", str(output)])
     report = json.loads(output.read_text())
     assert report["lidar_backends"] == ["mesh", "grid"] and report["scan_comparison"]["rays"] == 46656
-    assert report["schema_version"] == 4
+    assert report["schema_version"] == 5
     assert len(report["results"]) == 4 and len(report["lidar_speedups"]) == 2
     assert all(v["status"] == "passed" for v in report["validation"])
     for result in report["results"]:

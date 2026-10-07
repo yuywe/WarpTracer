@@ -17,13 +17,14 @@ trials. Every trial warms up for at least two real and two simulated seconds.
 | `quick` (default) | Eager vs. graph; physics, LiDAR, recording | 1 | 10 | `outputs/quick.json` |
 | `navigation` | LiDAR baseline vs. live disparity control | 1, 64, 256 | 100 | `outputs/navigation.json` |
 | `oval` | Physics, LiDAR and disparity on the elevated loop | 1, 64, 256 | 100 | `outputs/oval-benchmark.json` |
+| `scale` | Mesh vs. uncached/cached EDT; moving scans and distributed oval navigation | 256, 1024, 4096 | 20 | `outputs/scale.json` |
 | `grid` | Mesh vs. EDT marching: fixed scans and oval navigation | 1, 64, 256 | 100 | `outputs/grid.json` |
 | `batches` | Physics and LiDAR as car count increases | 1, 64, 256, 1024 | 100 | `outputs/batches.json` |
 | `fusion` | Fused vs. unfused physics; physics and LiDAR | 1 | 1000 | `outputs/fusion.json` |
 
 `quick` chooses CUDA when available, otherwise CPU, and uses fused physics.
 The other presets require CUDA and use graph replay; `navigation` and `batches`
-use fused physics, as do `oval` and `grid`. Those two presets use the elevated
+use fused physics, as do `oval`, `grid` and `scale`. These presets use the elevated
 track; the existing presets keep the room workload for comparable measurements.
 Select a GPU runtime in Colab. For a small CPU check use
 `uv run warptracer benchmark`; CPU timings do not measure GPU performance.
@@ -40,6 +41,49 @@ case the aggregate transition rate is complete per-car scans/s, physics rate
 is zero, and simulation-speed metrics are null. The preset measures mesh/grid
 scan errors before timing and prints their median-time speed ratio. See the
 [grid experiment](grid-lidar.md) for accuracy limits and how to read the report.
+
+## Large batches for future PPO rollouts
+
+```bash
+uv run warptracer benchmark scale
+```
+
+This compares mesh, ordinary EDT and cached EDT at **256, 1,024 and 4,096 cars**.
+It uses two workloads, 20 seconds of the 60 Hz schedule and three trials:
+
+| Workload | Purpose |
+| --- | --- |
+| `moving_scan` | Every backend follows the same prescribed 3D centerline poses, isolating sensing cost while poses change |
+| `navigation` | Full lean physics, LiDAR and disparity control; starts are distributed around the oval |
+
+Moving scans replay one 4,096-pose tilted loop from device memory, with a phase
+offset per car. Each transition advances two pose samples. One shared 112 KiB
+path is uploaded per runner; memory does not grow as frames times cars. Pose
+replay and mount composition are included in timing; preprocessing is excluded.
+No physics or policy is run in this workload, so its physics rate is zero and
+its simulated-speed metric is null. This prescribed path is not a recorded
+physical trajectory. Navigation remains an end-to-end comparison and its paths
+can differ between sensing backends.
+
+EDT caching retains a ray's four grid samples while it remains in one bilinear
+patch. Interpolation and convergence checks still run at every step; the cache
+ends with that ray. Separate specialized kernels let uncached scans avoid the
+cache's conditional sampling path. `grid_sample_cache` identifies each variant;
+**CACHED/UNCACHED** above one means caching was faster. Defaults remain uncached
+until native GPU measurements support a change. `scale` automatically tests both.
+The scan geometry, tolerance and iteration budget are unchanged.
+
+The lean, disparity and EDT modules skip unused environment backward-code
+generation. These modules serve model-free rollouts; this does not disable
+backpropagation through a future PPO policy network. The original Newton and
+mesh sensor packages are unchanged.
+
+At 4,096 cars, one 108-beam scan contains **442,368 rays**. A faster sensor can
+reduce rollout collection time, but total PPO speed also includes inference,
+learning, rewards/resets and rollout-buffer work. These benchmarks implement
+none of those PPO components. As an illustration, a 16% rollout speedup gives
+about a 7% total speedup if collection originally took half the training time.
+That is arithmetic under an assumed time split, not a prediction for 4,096 cars.
 
 ## Read the results
 
@@ -100,8 +144,9 @@ steering rate limits, tire grip and collision checks at every substep.
 Every fused or graph variant is compared against unfused eager execution before
 timing. Validation checks all cars' poses, velocities, controls, motion states,
 contact counts, scans and clocks; navigation also checks filtered scans and goals.
-Separate tests compare batch entries against independent single-car runs.
-For the grid experiment, parity uses the same LiDAR backend on both sides.
+Separate tests compare batch entries against independent single-car runs,
+including selected entries of a 4,096-car moving-scan batch.
+For the grid and scale experiments, parity uses the same LiDAR backend on both sides.
 Mesh/grid geometry differences are measured separately at identical poses;
 they are not asserted to be exact parity.
 

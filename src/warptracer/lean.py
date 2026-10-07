@@ -1,5 +1,8 @@
 """Bicycle dynamics with optional oval road following, shared across kernels."""
 import warp as wp
+
+# Model-free rollouts do not use environment adjoints.
+wp.set_module_options({"enable_backward": False})
 from .terrain import road_height, road_gradient, road_rotation
 
 

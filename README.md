@@ -46,10 +46,11 @@ The replay shows recorded motion; moving its camera does not rerun physics.
 | LiDAR vs. disparity navigation | `uv run warptracer benchmark navigation` | `outputs/navigation.json` |
 | Navigation on the elevated oval | `uv run warptracer benchmark oval` | `outputs/oval-benchmark.json` |
 | Mesh vs. EDT LiDAR | `uv run warptracer benchmark grid` | `outputs/grid.json` |
+| Large batches and moving LiDAR (up to 4,096 cars) | `uv run warptracer benchmark scale` | `outputs/scale.json` |
 | Independent car scaling | `uv run warptracer benchmark batches` | `outputs/batches.json` |
 | Fused vs. unfused physics | `uv run warptracer benchmark fusion` | `outputs/fusion.json` |
 
-The `grid`, `oval`, `navigation`, `batches` and `fusion` presets require CUDA by default.
+The `scale`, `grid`, `oval`, `navigation`, `batches` and `fusion` presets require CUDA by default.
 They fail immediately if a GPU is unavailable. The quick benchmark also works
 on CPU. See [benchmark presets and result units](docs/benchmarking.md).
 
@@ -60,8 +61,9 @@ the printed lap/contact counts. See [tracks and terrain following](docs/tracks.m
 
 The optional `oval-grid` demo marches full 3D rays using precomputed EDT
 clearance and terrain height. It creates no sensor triangle mesh. The mesh backend
-remains the default: grid boundaries approximate the track, and GPU performance
-still needs measurement. See [the comparison workflow and accuracy limits](docs/grid-lidar.md).
+remains the default: grid boundaries approximate the track. The T4 comparison showed a 16%
+navigation throughput gain over mesh at 256 cars; larger batches and the optional
+sample cache are measured separately by `scale`. See [the comparison workflow and accuracy limits](docs/grid-lidar.md).
 
 Only add an option when you need to change something:
 
@@ -78,7 +80,7 @@ remain available.
 Select **Runtime → Change runtime type → GPU**, then open either notebook:
 
 - [Driving replay](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/rigidbody_colab.ipynb): run setup, simulate, then display. It defaults to `scenario = "oval-grid"`; select `"oval"` for mesh sensing.
-- [Benchmarks](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/benchmark_colab.ipynb): run setup, choose a `preset`, then read the results. It defaults to `preset = "grid"` for the mesh/EDT comparison.
+- [Benchmarks](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/benchmark_colab.ipynb): run setup, choose a `preset`, then read the results. It defaults to `preset = "scale"` for moving scans, sample-cache comparisons and navigation with up to 4,096 cars. Use `"grid"` to repeat the earlier fixed-scan comparison.
 
 Both reuse the same checkout and root uv environment. Output streams into the
 cell. No command construction or physics settings need editing for normal runs.

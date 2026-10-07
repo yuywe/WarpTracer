@@ -10,6 +10,9 @@ import numpy as np
 from scipy.ndimage import distance_transform_edt
 import warp as wp
 
+# Model-free rollouts do not use environment adjoints.
+wp.set_module_options({"enable_backward": False})
+
 from racesense3d.core import Scan, validate_poses
 
 
@@ -120,7 +123,8 @@ def _closing_distance(gap: float, closing_rate: float):
 @wp.func
 def _march(grid: wp.array2d(dtype=wp.vec3), origin: wp.vec2, cell: float,
            wall_height: float, slope: float, z_bounds: wp.vec2,
-           start: wp.vec3, direction: wp.vec3, far: float, tolerance: float, max_steps: int):
+           start: wp.vec3, direction: wp.vec3, far: float, tolerance: float, max_steps: int,
+           cache_samples: bool):
     enter = float(0.0)
     leave = far
     # All zero surfaces lie inside this XYZ bounding box, including barrier roofs.
@@ -145,9 +149,35 @@ def _march(grid: wp.array2d(dtype=wp.vec3), origin: wp.vec2, cell: float,
     floor_closing = slope * horizontal - direction[2]
     roof_closing = slope * horizontal + direction[2]
     vertical_scale = wp.sqrt(1.0 + slope * slope)
+    cached_i = int(-1)
+    cached_j = int(-1)
+    node00 = wp.vec3()
+    node10 = wp.vec3()
+    node01 = wp.vec3()
+    node11 = wp.vec3()
     while t <= leave and steps < max_steps:
         p = start + t * direction
-        sample = _sample(grid, origin, cell, p)
+        sample = wp.vec3()
+        if cache_samples:
+            fx = (p[0] - origin[0]) / cell
+            fy = (p[1] - origin[1]) / cell
+            i = wp.clamp(int(wp.floor(fx)), 0, grid.shape[0] - 2)
+            j = wp.clamp(int(wp.floor(fy)), 0, grid.shape[1] - 2)
+            x = wp.clamp(fx - float(i), 0.0, 1.0)
+            y = wp.clamp(fy - float(j), 0.0, 1.0)
+            # Convergence often revisits a patch. Keep its four immutable samples
+            # in this ray's registers; interpolate afresh at every position.
+            if i != cached_i or j != cached_j:
+                node00 = grid[i, j]
+                node10 = grid[i + 1, j]
+                node01 = grid[i, j + 1]
+                node11 = grid[i + 1, j + 1]
+                cached_i = i
+                cached_j = j
+            sample = ((1.0 - x) * (1.0 - y) * node00 + x * (1.0 - y) * node10 +
+                      (1.0 - x) * y * node01 + x * y * node11)
+        else:
+            sample = _sample(grid, origin, cell, p)
         # Packed channels: normalized wall distance, normalized road distance, height.
         wall_xy = sample[0]
         road_xy = sample[1]
@@ -183,26 +213,31 @@ def _march(grid: wp.array2d(dtype=wp.vec3), origin: wp.vec2, cell: float,
     return wp.vec3(hit, float(steps), float(exhausted))
 
 
-@wp.kernel
-def _cast(grid: wp.array2d(dtype=wp.vec3), origin: wp.vec2, cell: float,
-          wall_height: float, slope: float, z_bounds: wp.vec2,
-          tolerance: float, max_steps: int,
-          origins: wp.array(dtype=wp.vec3), rotations: wp.array(dtype=wp.mat33),
-          directions: wp.array(dtype=wp.vec3), factors: wp.array(dtype=float), near: float, far: float,
-          values: wp.array2d(dtype=float), valid: wp.array2d(dtype=int),
-          iteration_maxima: wp.array2d(dtype=int), limit_counts: wp.array2d(dtype=int)):
-    b, r = wp.tid()
-    factor = factors[r]
-    result = _march(grid, origin, cell, wall_height, slope, z_bounds, origins[b],
-                    rotations[b] * directions[r], far / factor, tolerance, max_steps)
-    distance = result[0] * factor
-    values[b, r] = far
-    valid[b, r] = 0
-    if distance >= near and distance < far:
-        values[b, r] = distance
-        valid[b, r] = 1
-    iteration_maxima[b, r] = wp.max(iteration_maxima[b, r], int(result[1]))
-    limit_counts[b, r] += int(result[2])
+def _cast_kernel(cache_samples):
+    @wp.kernel(enable_backward=False, module="unique")
+    def cast(grid: wp.array2d(dtype=wp.vec3), origin: wp.vec2, cell: float,
+              wall_height: float, slope: float, z_bounds: wp.vec2,
+              tolerance: float, max_steps: int,
+              origins: wp.array(dtype=wp.vec3), rotations: wp.array(dtype=wp.mat33),
+              directions: wp.array(dtype=wp.vec3), factors: wp.array(dtype=float), near: float, far: float,
+              values: wp.array2d(dtype=float), valid: wp.array2d(dtype=int),
+              iteration_maxima: wp.array2d(dtype=int), limit_counts: wp.array2d(dtype=int)):
+        b, r = wp.tid()
+        factor = factors[r]
+        result = _march(grid, origin, cell, wall_height, slope, z_bounds, origins[b],
+                        rotations[b] * directions[r], far / factor, tolerance, max_steps, wp.static(cache_samples))
+        distance = result[0] * factor
+        values[b, r] = far
+        valid[b, r] = 0
+        if distance >= near and distance < far:
+            values[b, r] = distance
+            valid[b, r] = 1
+        iteration_maxima[b, r] = wp.max(iteration_maxima[b, r], int(result[1]))
+        limit_counts[b, r] += int(result[2])
+    return cast
+
+
+_CAST = {cached: _cast_kernel(cached) for cached in (False, True)}
 
 
 class GridScene:
@@ -222,13 +257,13 @@ class GridScene:
             high += field.wall_height
         self.z_bounds = wp.vec2(low - .01, high + .01)
 
-    def sensor(self, rays, batch_size=1, near=.02, far=30., *, tolerance=.002, max_steps=512):
-        return GridSensor(self, rays, batch_size, near, far, tolerance, max_steps)
+    def sensor(self, rays, batch_size=1, near=.02, far=30., *, tolerance=.002, max_steps=512, cache_samples=False):
+        return GridSensor(self, rays, batch_size, near, far, tolerance, max_steps, cache_samples)
 
 
 class GridSensor:
     """Borrowed Scan buffers plus explicit, device-resident convergence counters."""
-    def __init__(self, scene, rays, batch_size, near, far, tolerance, max_steps):
+    def __init__(self, scene, rays, batch_size, near, far, tolerance, max_steps, cache_samples):
         if not isinstance(batch_size, int) or batch_size < 1:
             raise ValueError("batch_size must be a positive integer")
         if not np.isfinite((near, far, tolerance)).all() or not 0 <= near < far or tolerance <= 0:
@@ -237,6 +272,7 @@ class GridSensor:
             raise ValueError("March max_steps must be a positive integer")
         self.scene, self.rays, self.batch_size = scene, rays, batch_size
         self.near, self.far, self.tolerance, self.max_steps = float(near), float(far), float(tolerance), max_steps
+        self.cache_samples = bool(cache_samples)
         self.directions = wp.array(rays.directions, dtype=wp.vec3, device=scene.device)
         self.factors = wp.array(rays.factors, dtype=float, device=scene.device)
         self.origins = wp.empty(batch_size, dtype=wp.vec3, device=scene.device)
@@ -255,6 +291,7 @@ class GridSensor:
     def diagnostics(self):
         counts = self.iteration_maxima.numpy()
         return {"algorithm": self.scene.algorithm, "tolerance_m": self.tolerance,
+                "sample_cache": self.cache_samples,
                 "max_steps": self.max_steps, "max_iterations_observed": int(counts.max()),
                 "mean_per_ray_max_iterations": float(counts.mean()),
                 "iteration_limit_events": int(self.limit_counts.numpy().sum())}
@@ -265,7 +302,7 @@ class GridSensor:
                 origins.dtype != wp.vec3 or rotations.dtype != wp.mat33):
             raise ValueError("Device poses must match the sensor's device, batch size and pose types")
         field = self.scene.field
-        wp.launch(_cast, dim=self.values.shape, inputs=[self.scene.grid, wp.vec2(*field.origin), field.cell_size,
+        wp.launch(_CAST[self.cache_samples], dim=self.values.shape, inputs=[self.scene.grid, wp.vec2(*field.origin), field.cell_size,
             field.wall_height, self.scene.slope, self.scene.z_bounds, self.tolerance, self.max_steps,
             origins, rotations, self.directions, self.factors, self.near, self.far],
             outputs=[self.values, self.valid, self.iteration_maxima, self.limit_counts], device=self.scene.device)

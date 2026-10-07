@@ -8,6 +8,9 @@ from dataclasses import dataclass, asdict
 
 import numpy as np
 import warp as wp
+
+# Model-free rollouts do not use environment adjoints.
+wp.set_module_options({"enable_backward": False})
 from .terrain import OvalTrack
 
 

@@ -10,7 +10,7 @@ from .scene import Vehicle
 from .terrain import road_rotation
 
 
-def oval_scan_comparison(track, device, *, beams=108, cell_size=.025):
+def oval_scan_comparison(track, device, *, beams=108, cell_size=.025, sample_cache=False):
     """Measure discretization error, independently of navigation trajectories.
 
     Sample 48 positions around each of three lane offsets, with road-aligned and
@@ -42,7 +42,8 @@ def oval_scan_comparison(track, device, *, beams=108, cell_size=.025):
     outputs = []
     grid_diagnostics = None
     for scene in (mesh, grid):
-        sensor = scene.sensor(rays, batch_size=len(positions), near=config.near, far=config.far)
+        options = {"cache_samples": sample_cache} if scene is grid else {}
+        sensor = scene.sensor(rays, batch_size=len(positions), near=config.near, far=config.far, **options)
         outputs.append(sensor.scan(positions, rotations).numpy())
         if scene is grid:
             grid_diagnostics = sensor.diagnostics()

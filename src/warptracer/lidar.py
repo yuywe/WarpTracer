@@ -24,12 +24,15 @@ class LidarConfig:
     mount_rpy: tuple = (0.0, 0.0, 0.0)
     backend: str = "mesh"
     grid_cell_size: float = 0.025
+    grid_sample_cache: bool = False
 
     def __post_init__(self):
         if self.backend not in ("mesh", "grid"):
             raise ValueError("LiDAR backend must be mesh or grid")
         if not np.isfinite(self.grid_cell_size) or self.grid_cell_size <= 0:
             raise ValueError("Grid cell size must be finite and positive")
+        if not isinstance(self.grid_sample_cache, bool):
+            raise ValueError("Grid sample cache must be a boolean")
         if not isinstance(self.beams, int) or self.beams < 1:
             raise ValueError("LiDAR beams must be a positive integer")
         if not isinstance(self.frequency, int) or self.frequency < 1:
@@ -106,7 +109,8 @@ class MountedLidar:
                 center, half_size = np.asarray(position), np.asarray(dimensions) / 2
                 quads.extend(box(center - half_size, center + half_size))
             self.scene = from_quads(quads, device=device)
-        self.sensor = self.scene.sensor(self.rays, batch_size=batch_size, near=config.near, far=config.far)
+        options = {"cache_samples": config.grid_sample_cache} if config.backend == "grid" else {}
+        self.sensor = self.scene.sensor(self.rays, batch_size=batch_size, near=config.near, far=config.far, **options)
         self.poses = wp.empty(batch_size, dtype=wp.transform, device=device)
         self.timestamp = 0.0
 

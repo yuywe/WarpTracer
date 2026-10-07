@@ -6,7 +6,7 @@ preprocessing; the locked package versions remain unchanged.
 
 ## Behavior and capture checks
 
-Full suite: **106 passed, 32 skipped** (CUDA unavailable).
+Full suite: **113 passed, 37 skipped** (CUDA unavailable).
 This includes the 40 Hz recording and disparity bug regression checks.
 
 ## Run commands and presets
@@ -42,11 +42,10 @@ LiDAR. Unsafe odd substep counts and inconsistent sensor schedules are rejected.
 The benchmark independently checks eager/graph poses, velocities, applied
 controls, scan poses, ranges, masks, and device step counts before timing.
 
-Thirty-two CUDA tests were skipped in the local CPU-only environment. CPU graph replay
-uses Warp's CPU API capture. The user-supplied GPU benchmark below separately
-confirms lean CUDA graph/eager parity for its workload; it does not establish
-that the full CUDA test suite, the Newton CUDA backend, or the new fused/batched
-CUDA paths pass.
+Thirty-seven CUDA tests were skipped in the local CPU-only environment. CPU graph replay
+uses Warp's CPU API capture. The user-supplied GPU benchmarks below separately
+confirm execution parity for their workloads; they do not establish that the full
+CUDA test suite or the new sampling-cache/moving-scan paths pass.
 No automatic fallback hides capture errors.
 
 ## Disparity navigation
@@ -155,8 +154,9 @@ entries match independent single cars. The scan-only benchmark keeps sensor pose
 identical across backends, never advances physics, and reports zero physics rate
 and null simulated-speed metrics. Replay metadata and schema-4 reports identify
 the EDT algorithm and separate convergence counts from timing. Both notebooks'
-code cells compile. Native CUDA execution of this replacement remains untested
-locally because a CUDA driver is unavailable.
+code cells compile. A CUDA driver is unavailable locally. The user's subsequent T4 result below
+validates the original EDT workload; it does not validate the newer cache or
+moving-scan variants.
 
 A three-trial CPU check used 1 and 64 cars, 10 seconds of the 60 Hz schedule,
 fused CPU API graph replay, and a shortened 0.25-real-second warmup. All eight
@@ -165,6 +165,66 @@ reported zero exhausted rays. Grid/mesh median speed ratios were 0.909x / 1.428x
 for fixed scans and 1.047x / 1.017x for navigation (1 / 64 cars). Single-car samples
 were short and these results are not a native CUDA speed prediction. The hosted
 Colab setup and GPU benchmark must still be run on the T4.
+
+### User-supplied T4 result: original EDT marcher
+
+The user supplied a three-trial Tesla T4 report with 100 seconds per car,
+graph/fused, 108 rays at 60 Hz and default warmup. All 12 execution-parity checks
+passed. The identical-pose comparison matched the CPU metrics at printed
+precision: p95 15.4 mm, p99 27.7 mm, maximum 6.8555 m, 29 / 46,656 validity
+disagreements, maximum 132 march iterations and zero budget exhaustion.
+Completion also implies timed EDT trials passed their exhaustion checks.
+The pasted output does not include wall-contact counters or lap progress.
+
+| Cars | Mesh scans/s | EDT scans/s | Mesh navigation transitions/s | EDT navigation transitions/s |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 16,946 | 13,250 | 6,480 | 7,071 |
+| 64 | 692,931 | 673,781 | 359,106 | 385,929 |
+| 256 | 1,230,670 | 1,573,477 | 885,550 | 1,028,179 |
+
+Rates aggregate all cars. Grid/mesh scan ratios were 0.782x / 0.972x / 1.279x;
+navigation ratios were 1.091x / 1.075x / 1.161x. Fixed scans have identical poses;
+closed-loop navigation paths can differ. These measurements precede sample
+caching, distributed navigation starts and the new moving-scan workload.
+
+### Large batches, controlled moving scans and sampling cache
+
+Optional per-ray caching keeps the four grid samples until that ray leaves a
+bilinear patch. Cached/uncached kernels are specialized separately. CPU checks
+compare 257 tilted poses, including ground/roof/sky rays, with identical masks
+and range agreement within 2e-5 m. The same terrain representation, 2 mm surface
+tolerance and 512-iteration budget are retained. Uncached remains the default.
+The lean, disparity and EDT modules disable unused adjoint code generation for
+model-free rollouts; Newton and the copied mesh sensor package are unchanged.
+
+The `moving_scan` workload replays a shared 4,096-pose tilted centerline loop
+with phase offsets per car. Tests require identical sensor poses across mesh,
+uncached EDT and cached EDT, motion, loop wraparound and reset. Captured/fused
+and eager/unfused executions agree at 40 and 60 Hz. Moving-scan reports have zero
+physics rate and null simulated-speed metrics. It is a prescribed trajectory,
+not a recorded physical vehicle path.
+
+CPU 4,096-car checks compare selected scan entries against independent cars.
+A separate 4,096-car navigation check compares poses, velocities, controls,
+ranges and masks at distinct initial phases against independent runs after two
+transitions. This is an indexing/behavior check, not sustained GPU throughput or
+PPO validation. CUDA variants of these tests remain skipped locally.
+
+A three-trial CPU API graph check exercised `scale` with 1 / 64 cars, 10 seconds
+of the 60 Hz schedule and shortened 0.25-real-second warmup. All 12 execution
+parity checks passed; all trials had zero wall contacts and zero exhausted rays.
+At 64 cars, cached/uncached ratios were 0.938x for moving scans and 0.954x for
+navigation: caching did not help this CPU workload. Uncached EDT/mesh ratios
+were 1.446x and 1.099x respectively. These are not predictions for a T4.
+
+The `scale` preset tests 256 / 1,024 / 4,096 cars, mesh / uncached EDT / cached
+EDT, moving scans and disparity navigation, with 20 seconds per trial, three
+trials and default warmup. Navigation starts are spread around the oval so the
+batch does not contain thousands of identical driving states. Schema 5 records
+sampling variants and separate cache speed ratios. Both notebook code-cell
+compilation and Python 3.10 syntax checks passed. GPU throughput and hosted
+Colab execution of this new preset remain to be measured. PPO inference,
+learning, reward/termination logic and automatic resets are not implemented.
 
 ### Historical T4 result: deleted traversal backend
 
