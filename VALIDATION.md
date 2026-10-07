@@ -1,12 +1,12 @@
 # Validation
 
-Checked on 2026-10-06 UTC with Linux x86-64, Python 3.12.14, Newton 1.6.0,
+Checked on 2026-10-07 UTC with Linux x86-64, Python 3.12.14, Newton 1.6.0,
 Warp 1.17.0, and Viser 1.0.26. Dependency versions are unchanged; uv.lock now
 includes Viser in the base installation as well as the compatibility viz extra.
 
 ## Behavior and capture checks
 
-Full suite: **90 passed, 27 skipped** (CUDA unavailable).
+Full suite: **107 passed, 32 skipped** (CUDA unavailable).
 This includes the 40 Hz recording and disparity bug regression checks.
 
 ## Run commands and presets
@@ -42,7 +42,7 @@ LiDAR. Unsafe odd substep counts and inconsistent sensor schedules are rejected.
 The benchmark independently checks eager/graph poses, velocities, applied
 controls, scan poses, ranges, masks, and device step counts before timing.
 
-Twenty-seven CUDA tests were skipped in the local CPU-only environment. CPU graph replay
+Thirty-two CUDA tests were skipped in the local CPU-only environment. CPU graph replay
 uses Warp's CPU API capture. The user-supplied GPU benchmark below separately
 confirms lean CUDA graph/eager parity for its workload; it does not establish
 that the full CUDA test suite, the Newton CUDA backend, or the new fused/batched
@@ -77,8 +77,8 @@ fused/unfused combinations were checked again with those batch sizes over ten
 simulated seconds; the 60-second recorded demo again traveled 51.6 m with zero
 wall-contact substeps. These CPU timing runs used one trial and a shortened
 0.25-second real warmup; they are behavior/parity checks, not GPU performance data.
-New controller CUDA execution and its
-throughput still need to be checked on a GPU; CPU results do not establish those.
+The user's later mesh-oval CUDA report below separately covers disparity
+throughput and reference parity; the new grid backend remains untested on CUDA.
 
 The unmodified published simulation previously achieved 5.38 million aggregate
 transitions/s on the user's Tesla T4 with 256 cars and 108-ray LiDAR at 60 Hz.
@@ -105,9 +105,62 @@ reference across all four CPU execution combinations, including scans, controls,
 goals and contacts. Reset preserves their initial headings. The short demo and
 oval benchmark preset tests verify output/track metadata and that benchmark
 reports do not overwrite demo metadata. CUDA oval tests are skipped locally;
-the GPU oval preset still needs to be run on Colab.
+the user's subsequent Colab report is recorded below.
 The ten-second CPU oval benchmark also passed full-state reference validation
 with 1 and 64 cars, using one trial and a shortened 0.25-second real warmup.
+
+The user supplied a Tesla T4 mesh-oval report on 2026-10-07 UTC: three trials,
+100 simulated seconds per car, graph/fused, 108 rays at 60 Hz, and the default
+warmup. Median aggregate navigation transitions/s were 6,490 / 372,202 / 919,642
+for 1 / 64 / 256 cars; corresponding batch rates were 6,490 / 5,816 / 3,592.
+Trial variation was under 2% and all printed unfused/eager parity checks passed.
+This pasted report validates that workload; it does not establish grid results
+or execution of every CUDA test.
+
+## Height-field LiDAR experiment
+
+Grid sensing is opt-in (`demo oval-grid` or `LidarConfig(backend="grid")`). It
+uses bilinear terrain and extruded occupancy cells, with conservative 8x8 tile
+bounds and full 3D rays. No sensor mesh/BVH is constructed. The sensor package
+in `src/racesense3d` remains unchanged as the reference.
+
+Independent checks cover sloped ground from above/below, holes, vertical and
+horizontal rays, sky misses, outside-grid origins, exact cell boundaries,
+partial tiles, quadratic bilinear intersections, range factors, near clipping,
+barrier roofs/sides and rays above barriers. Internal occupied-cell boundaries
+are not surfaces. Random rays against a sloped plane and extruded rectangle
+agree with independent mesh geometry; random terrain rays agree between tiled
+and unaccelerated traversal.
+
+Grid navigation completes multiple laps over 120 seconds with zero contacts,
+valid scans and the oval's full elevation range. Three distinct spawns pass
+unfused/eager reference checks for graph and fused variants, including controller
+state, scans, contact counts and reset. At 40 Hz, batch entries match independent
+single-car runs. The fixed-scan benchmark keeps both geometry backends' poses
+identical and never advances physics. Tests check replay export, sensor metadata,
+comparison errors and speed-ratio fields, and zero physics-rate/null simulation
+speed for that scan-only case. CUDA grid tests remain skipped locally.
+
+The exact `uv run warptracer demo oval-grid` command exported HTML/NPZ/JSON,
+with four completed laps, 7,201 valid scans, a 0.400 m elevation range and zero
+contacts. It finished moving at 1.22 m/s; peak speed was 1.28 m/s. CPU elapsed
+time was 1.151 s including recording, which is a workflow check rather than a
+GPU prediction.
+
+The 2.5 cm grid's identical-pose comparison samples 432 poses and 46,656 rays:
+44,524 common hits, 5.15 mm median error, 17.1 mm p95 and 31.0 mm p99. There are
+31 hit/miss disagreements (0.066%), 16 common-hit errors above 1 m, and a 6.82 m
+maximum error. These outliers occur around visibility changes at rasterized
+boundaries; they must not be hidden behind percentile statistics. The report
+retains worst-ray origins, directions and both ranges. See [the grid guide](docs/grid-lidar.md).
+
+`benchmark grid` compares fixed-pose sensing and complete navigation separately,
+with backend-specific execution parity checks. A short one-trial CPU run verified
+all comparison/report paths for 1 and 3 cars. Its millisecond timing samples do
+not establish a speedup or predict the T4. The updated notebooks' code cells
+compile; hosted Colab execution of this new preset remains untested here.
+Mesh sensing stays the default. PNG import, arbitrary-map physics and slope
+gravity are not part of this change.
 
 ## Fusion, batches, and wall-clock warmup
 
@@ -246,8 +299,10 @@ barriers. The force model does not simulate gravity along slopes, suspension,
 airborne motion, calibrated tire slip curves, wheel spin, or reverse throttle.
 Newton remains available for the earlier room force/contact behavior.
 
-LiDAR is instantaneous and noise-free, using the unchanged sensor package.
-The host vehicle is excluded; static wall/floor geometry is shared with playback.
+LiDAR is instantaneous and noise-free. Mesh sensing uses the unchanged sensor
+package; the optional grid backend approximates the oval with height/occupancy
+arrays. The host vehicle is excluded. Mesh sensor geometry matches playback;
+the grid approximation can differ at rasterized boundaries.
 Independent environments now share static geometry and run in batches.
 Moving obstacles, scan distortion, per-environment auto-reset,
 rewards, and PPO are not implemented.

@@ -30,6 +30,9 @@ The shared static mesh has 6,144 triangles, with 192 segments around the loop
 and eight strips across the lane. Playback and LiDAR use identical vertices and
 faces. Lean physics evaluates the matching analytic surface; tests check mesh
 height against it within 1 mm.
+`uv run warptracer demo oval-grid` keeps this road and physics but replaces
+sensor geometry with rasterized occupancy and a height field. See the
+[grid LiDAR experiment](grid-lidar.md) for its accuracy and timing comparison.
 
 ## Driving behavior
 
@@ -60,9 +63,12 @@ uv run warptracer benchmark oval
 ```
 
 This measures navigation with 1, 64 and 256 independent cars and writes
-`outputs/oval-benchmark.json`. Existing presets keep their room workloads. See the
-[benchmark guide](benchmarking.md) for timing and units. GPU throughput for this
-new track still needs measurement.
+`outputs/oval-benchmark.json`. The `grid` preset compares sensing backends on the
+same track; the other presets use the room. See the
+[benchmark guide](benchmarking.md) for timing and units. GPU throughput for the
+grid backend still needs measurement. The user's mesh-oval Tesla T4 run measured
+6,490 / 372,202 / 919,642 aggregate navigation transitions/s for 1 / 64 / 256
+cars; this does not predict grid performance.
 
 For geometry experiments, configure it in Python:
 

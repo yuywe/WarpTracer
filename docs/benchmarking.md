@@ -17,13 +17,14 @@ trials. Every trial warms up for at least two real and two simulated seconds.
 | `quick` (default) | Eager vs. graph; physics, LiDAR, recording | 1 | 10 | `outputs/quick.json` |
 | `navigation` | LiDAR baseline vs. live disparity control | 1, 64, 256 | 100 | `outputs/navigation.json` |
 | `oval` | Physics, LiDAR and disparity on the elevated loop | 1, 64, 256 | 100 | `outputs/oval-benchmark.json` |
+| `grid` | Mesh vs. height-field sensing: fixed scans and oval navigation | 1, 64, 256 | 100 | `outputs/grid.json` |
 | `batches` | Physics and LiDAR as car count increases | 1, 64, 256, 1024 | 100 | `outputs/batches.json` |
 | `fusion` | Fused vs. unfused physics; physics and LiDAR | 1 | 1000 | `outputs/fusion.json` |
 
 `quick` chooses CUDA when available, otherwise CPU, and uses fused physics.
 The other presets require CUDA and use graph replay; `navigation` and `batches`
-use fused physics, as does `oval`. Only the `oval` preset uses the elevated track;
-the existing presets keep the room workload for comparable measurements.
+use fused physics, as do `oval` and `grid`. Those two presets use the elevated
+track; the existing presets keep the room workload for comparable measurements.
 Select a GPU runtime in Colab. For a small CPU check use
 `uv run warptracer benchmark`; CPU timings do not measure GPU performance.
 
@@ -32,6 +33,13 @@ of the same static enclosure. They do not interact. Physics/LiDAR/recording case
 use scripted circle commands. Navigation consumes scans to choose controls, so
 its comparison includes both controller work and the changed trajectory.
 These benchmarks contain no learning, policy inference, rewards or auto-resets.
+
+`grid` also measures **fixed-pose scans without physics or controller work**.
+Both sensor backends see identical car poses spaced around the track. For that
+case the aggregate transition rate is complete per-car scans/s, physics rate
+is zero, and simulation-speed metrics are null. The preset measures mesh/grid
+scan errors before timing and prints their median-time speed ratio. See the
+[grid experiment](grid-lidar.md) for accuracy limits and how to read the report.
 
 ## Read the results
 
@@ -73,6 +81,8 @@ uv run warptracer benchmark navigation --envs 1
 | `--substeps 6` | 40 Hz control and sensing; recording also needs `--record-hz 20` or `40` |
 | `--output outputs/my-run.json` | Save to a different path |
 | `--track oval` | Use the elevated loop in a custom lean workload |
+| `--lidar-backend grid` | Optional height-field sensing on the oval; `both` compares against mesh |
+| `--grid-cell-size .02` | Change grid resolution in meters |
 
 Use `uv run warptracer benchmark --help` for all options. Low-level module
 commands remain supported for custom experiments, including Newton (one car,
@@ -91,6 +101,9 @@ Every fused or graph variant is compared against unfused eager execution before
 timing. Validation checks all cars' poses, velocities, controls, motion states,
 contact counts, scans and clocks; navigation also checks filtered scans and goals.
 Separate tests compare batch entries against independent single-car runs.
+For the grid experiment, parity uses the same LiDAR backend on both sides.
+Mesh/grid geometry differences are measured separately at identical poses;
+they are not asserted to be exact parity.
 
 Warmup submits full-trial chunks and checks both duration minima between chunks,
 so it can overshoot by one chunk. The report records the actual warmup. CUDA event

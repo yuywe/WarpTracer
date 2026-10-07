@@ -98,3 +98,14 @@ class TransitionRunner:
             self.sim._uploaded_command = None
         if self.sim.lidar is not None:
             self.sim.lidar.timestamp = self.sim.steps * self.sim.dt
+
+
+class ScanRunner(TransitionRunner):
+    """Benchmark-only scan replay: fixed poses, no physics/controller work.
+
+    The inherited counter advances a nominal sensor schedule for accounting;
+    vehicle state never advances. Both geometry backends see identical rays.
+    """
+    def _operations(self):
+        self.sim.lidar.update(self.sim.state, self.sim.body, 0.0)
+        wp.launch(advance_clock, dim=1, inputs=[self.clock, self.substeps], device=self.sim.model.device)

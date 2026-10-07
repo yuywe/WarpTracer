@@ -15,13 +15,13 @@ from importlib.metadata import version
 import numpy as np
 import warp as wp
 
-from .execution import TransitionRunner
+from .execution import ScanRunner, TransitionRunner
 from .lidar import LidarConfig
 from .simulation import Simulation
 from .terrain import OvalTrack
 
 
-CASES = ("physics", "lidar", "recording", "navigation")
+CASES = ("physics", "lidar", "recording", "navigation", "scan")
 
 # Related settings live together so normal runs need only a preset name.
 PRESETS = {
@@ -36,13 +36,21 @@ PRESETS = {
     "oval": dict(device="cuda:0", physics="lean", backend="graph", integrator="fused", track="oval",
                  envs=[1, 64, 256], cases=["navigation"], seconds=100, trials=3,
                  output=Path("outputs/oval-benchmark.json")),
+    "grid": dict(device="cuda:0", physics="lean", backend="graph", integrator="fused", track="oval",
+                 lidar_backend="both", envs=[1, 64, 256], cases=["scan", "navigation"], seconds=100, trials=3),
 }
 
 
-def make_runner(case, backend, device, substeps, engine="lean", beams=LidarConfig.beams, num_envs=1, integrator="unfused", track="room"):
-    lidar = None if case == "physics" else LidarConfig(beams=beams, frequency=240 // substeps)
+def make_runner(case, backend, device, substeps, engine="lean", beams=LidarConfig.beams, num_envs=1, integrator="unfused", track="room", lidar_backend="mesh", grid_cell_size=.025):
+    lidar = None if case == "physics" else LidarConfig(beams=beams, frequency=240 // substeps,
+                                                     backend=lidar_backend, grid_cell_size=grid_cell_size)
     sim = Simulation(track=OvalTrack() if track == "oval" else None,
                      scenario="circle", device=device, lidar=lidar, engine=engine, num_envs=num_envs)
+    if case == "scan":
+        if track == "oval":
+            sim.initial_pose[:] = [sim.track.pose(float(angle), sim.drive.ride_height(sim.vehicle))
+                                   for angle in np.linspace(-np.pi / 2, 3 * np.pi / 2, num_envs, endpoint=False)]
+        return ScanRunner(sim, backend=backend, substeps=substeps, integrator=integrator)
     return TransitionRunner(sim, backend=backend, substeps=substeps,
                             controller="disparity" if case == "navigation" else "circle", integrator=integrator)
 
@@ -145,11 +153,12 @@ def trial(runner, case, transitions, warmup, record_hz, warmup_wall_seconds=2.0)
         # Event intervals include stream idle gaps; these are not summed kernel durations.
         "cuda_stream_seconds": wp.get_event_elapsed_time(*events, synchronize=False) / 1000 if events else None,
         "warmup_transitions": warmup_count, "warmup_wall_seconds": warmup_elapsed,
-        "physics_substeps_per_second": sim.num_envs * transitions * runner.substeps / elapsed,
+        "physics_substeps_per_second": 0 if case == "scan" else sim.num_envs * transitions * runner.substeps / elapsed,
+        "aggregate_lidar_scans_per_second": sim.num_envs * transitions / elapsed if sim.lidar is not None else 0,
         "aggregate_environment_transitions_per_second": sim.num_envs * transitions / elapsed,
         "batch_transitions_per_second": transitions / elapsed,
         "environment_transitions_per_second": sim.num_envs * transitions / elapsed,
-        "simulated_seconds_per_second": transitions * runner.substeps * sim.dt / elapsed,
+        "simulated_seconds_per_second": None if case == "scan" else transitions * runner.substeps * sim.dt / elapsed,
         "recorded_frames": len(records),
         "checked_environments": sim.num_envs,
         "wall_contact_substeps": sim.wall_contact_substeps.numpy().tolist() if sim.engine == "lean" else None,
@@ -158,7 +167,7 @@ def trial(runner, case, transitions, warmup, record_hz, warmup_wall_seconds=2.0)
     }
 
 
-def summarize(samples, transitions, substeps, num_envs=1):
+def summarize(samples, transitions, substeps, num_envs=1, case=None):
     times = [sample["elapsed_seconds"] for sample in samples]
     median = statistics.median(times)
     spread = max(times) / min(times)
@@ -166,11 +175,11 @@ def summarize(samples, transitions, substeps, num_envs=1):
         "median_seconds": median, "min_seconds": min(times), "max_seconds": max(times),
         "max_min_ratio": spread,
         "timing_variable": spread > 1.2,
-        "median_physics_substeps_per_second": num_envs * transitions * substeps / median,
+        "median_physics_substeps_per_second": 0 if case == "scan" else num_envs * transitions * substeps / median,
         "median_environment_transitions_per_second": num_envs * transitions / median,
         "median_aggregate_environment_transitions_per_second": num_envs * transitions / median,
         "median_batch_transitions_per_second": transitions / median,
-        "median_simulated_seconds_per_second_per_env": transitions * substeps / 240 / median,
+        "median_simulated_seconds_per_second_per_env": None if case == "scan" else transitions * substeps / 240 / median,
     }
 
 
@@ -179,7 +188,7 @@ def main(argv=None, *, default_preset=None):
     parser = argparse.ArgumentParser(prog="warptracer benchmark",
                                      description="Choose a preset; add options only to override its settings")
     parser.add_argument("preset", nargs="?", choices=PRESETS, default=default_preset,
-                        help="quick: execution/replay; fusion: fused vs unfused; batches: car scaling; navigation: room control; oval: elevated track control")
+                        help="quick: execution/replay; fusion: integration; batches: scaling; navigation: room control; oval: track control; grid: mesh vs height field")
     parser.add_argument("--device", default=None, help="GPU presets require CUDA; quick selects CUDA if available, else CPU")
     parser.add_argument("--physics", choices=("lean", "newton"), default="lean")
     parser.add_argument("--track", choices=("room", "oval"), default="room", help="Preset chooses the track")
@@ -195,6 +204,8 @@ def main(argv=None, *, default_preset=None):
     parser.add_argument("--trials", type=int, default=5)
     parser.add_argument("--substeps", type=int, default=4, help="Even physics substeps per transition")
     parser.add_argument("--lidar-beams", type=int, default=LidarConfig.beams)
+    parser.add_argument("--lidar-backend", choices=("mesh", "grid", "both"), default="mesh")
+    parser.add_argument("--grid-cell-size", type=float, default=.025, help="Grid resolution in meters; default 2.5 cm")
     parser.add_argument("--record-hz", type=int, default=30)
     parser.add_argument("--output", type=Path, default=Path("outputs/benchmark.json"))
     parser.add_argument("--profile", action="store_true", help="Separate eager Python profile for the smallest batch")
@@ -219,6 +230,12 @@ def main(argv=None, *, default_preset=None):
         parser.error("Oval road following currently requires lean physics")
     hz = 240 // args.substeps
     cases = list(dict.fromkeys(args.cases))
+    lidar_backends = ["mesh", "grid"] if args.lidar_backend == "both" else [args.lidar_backend]
+    if "grid" in lidar_backends:
+        if args.track != "oval":
+            parser.error("Grid LiDAR currently requires --track oval (or the grid preset)")
+        if not np.isfinite(args.grid_cell_size) or not 0 < args.grid_cell_size <= OvalTrack().barrier_thickness / 4:
+            parser.error("Oval grid cell size must be finite, positive and <= barrier_thickness/4 (0.03 m)")
     if args.record_hz <= 0 or ("recording" in cases and hz % args.record_hz):
         parser.error("record-hz must be positive and divide transition frequency for recording")
     transitions = round(args.seconds * hz)
@@ -239,26 +256,42 @@ def main(argv=None, *, default_preset=None):
           f"{args.substeps} substeps/transition; {hz} transitions per simulated second.", flush=True)
     print(f"LiDAR: {args.lidar_beams} rays at {hz} Hz. Warmup per trial: at least "
           f"{args.warmup_wall_seconds:g} real seconds AND {warmup / hz:g} simulated seconds.", flush=True)
+    print(f"LiDAR geometry: {', '.join(lidar_backends)}" +
+          (f"; grid cells {args.grid_cell_size:g} m" if "grid" in lidar_backends else ""), flush=True)
     if "graph" in backends and not device.is_cuda:
         print("CPU API graph replay is not a CUDA performance measurement.", flush=True)
+    scan_comparison = None
+    if args.track == "oval" and args.lidar_backend == "both":
+        from .lidar_comparison import oval_scan_comparison
+        scan_comparison = oval_scan_comparison(OvalTrack(), device, beams=args.lidar_beams,
+                                               cell_size=args.grid_cell_size)
+        errors = scan_comparison["absolute_range_error_m"]
+        print(f"Identical-pose mesh/grid comparison: p95={errors['p95']:.4f} m; "
+              f"p99={errors['p99']:.4f} m; max={errors['max']:.4f} m; "
+              f"{scan_comparison['valid_mismatch_count']}/{scan_comparison['rays']} hit/miss differences. "
+              "Grid geometry is an approximation, not exact mesh parity.", flush=True)
     runners, validations = {}, []
     for count in env_counts:
         for case in cases:
-            reference = make_runner(case, "eager", device, args.substeps, args.physics,
-                                    args.lidar_beams, count, "unfused", track=args.track)
-            for integrator in integrators:
-                for backend in backends:
-                    key = (count, case, integrator, backend)
-                    runner = (reference if (integrator, backend) == ("unfused", "eager") else
-                              make_runner(case, backend, device, args.substeps, args.physics,
-                                          args.lidar_beams, count, integrator, track=args.track))
-                    runners[key] = runner
-                    if runner is not reference:
-                        validate_pair(reference, runner, transitions=max(hz, 2))
-                        validations.append({"environments": count, "case": case,
-                                            "integrator": integrator, "backend": backend,
-                                            "reference": "unfused/eager", "status": "passed"})
-                        print(f"Unfused/eager parity passed: {key}", flush=True)
+            for lidar_backend in (lidar_backends if case != "physics" else ["mesh"]):
+                reference = make_runner(case, "eager", device, args.substeps, args.physics,
+                                        args.lidar_beams, count, "unfused", track=args.track,
+                                        lidar_backend=lidar_backend, grid_cell_size=args.grid_cell_size)
+                for integrator in integrators:
+                    for backend in backends:
+                        key = (count, case, integrator, backend, lidar_backend)
+                        runner = (reference if (integrator, backend) == ("unfused", "eager") else
+                                  make_runner(case, backend, device, args.substeps, args.physics,
+                                              args.lidar_beams, count, integrator, track=args.track,
+                                              lidar_backend=lidar_backend, grid_cell_size=args.grid_cell_size))
+                        runners[key] = runner
+                        if runner is not reference:
+                            validate_pair(reference, runner, transitions=max(hz, 2))
+                            validations.append({"environments": count, "case": case,
+                                                "integrator": integrator, "backend": backend,
+                                                "lidar_backend": lidar_backend,
+                                                "reference": "unfused/eager with the same LiDAR geometry", "status": "passed"})
+                            print(f"Unfused/eager parity passed: {key}", flush=True)
     samples = {key: [] for key in runners}
     keys = list(runners)
     for repeat in range(args.trials):
@@ -266,15 +299,15 @@ def main(argv=None, *, default_preset=None):
         if repeat % 2:
             order = order[::-1]
         for key in order:
-            count, case, integrator, backend = key
+            count, case, integrator, backend, lidar_backend = key
             result = trial(runners[key], case, transitions, warmup, args.record_hz, args.warmup_wall_seconds)
             samples[key].append(result)
-            print(f"trial {repeat+1}/{args.trials} N={count} {case} {integrator}/{backend}: "
+            print(f"trial {repeat+1}/{args.trials} N={count} {case} {lidar_backend} {integrator}/{backend}: "
                   f"{result['elapsed_seconds']:.3f}s; "
                   f"{result['aggregate_environment_transitions_per_second']:.0f} aggregate transitions/s; "
                   f"{result['batch_transitions_per_second']:.0f} batch transitions/s", flush=True)
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "preset": args.preset,
         "device": str(device), "device_name": device.name, "platform": platform.platform(),
         "python": platform.python_version(), "versions": {p: version(p) for p in ("warp-lang", "newton", "numpy")},
@@ -283,33 +316,53 @@ def main(argv=None, *, default_preset=None):
         "environments": env_counts[0] if len(env_counts) == 1 else None,
         "integrators": integrators, "physics_hz": 240, "substeps_per_transition": args.substeps,
         "transition_hz": hz, "lidar_hz": hz, "lidar_beams": args.lidar_beams,
+        "lidar_backends": lidar_backends, "grid_cell_size_m": args.grid_cell_size if "grid" in lidar_backends else None,
+        "scan_comparison": scan_comparison,
         "record_hz": args.record_hz, "transitions_per_trial": transitions,
         "simulated_seconds_per_trial": transitions / hz, "warmup_seconds": warmup / hz,
         "minimum_warmup_wall_seconds": args.warmup_wall_seconds,
         "validation": validations,
         "warmup_chunk_transitions": transitions,
-        "timing_scope": "End-to-end Python submission, GPU waiting, stepping, sensors, and optional host recording; excludes setup, warmup, reset, validation, HTML and disk writes",
+        "timing_scope": "End-to-end Python submission, GPU waiting, stepping, sensors, and optional host recording; scan case uses fixed poses without physics/controller; excludes setup, warmup, reset, validation, HTML and disk writes",
         "throughput_units": "environment transitions/s and physics substeps/s aggregate all cars; batch transitions/s counts runner advances",
         "final_state_scope": "All cars checked finite; final_pose/final_velocity contain car zero only",
         "results": [],
     }
     for key in keys:
-        count, case, integrator, backend = key
-        summary = summarize(samples[key], transitions, args.substeps, count)
+        count, case, integrator, backend, lidar_backend = key
+        summary = summarize(samples[key], transitions, args.substeps, count, case)
         report["results"].append({"environments": count, "case": case, "integrator": integrator,
+                                  "physics_substeps_per_transition": 0 if case == "scan" else args.substeps,
+                                  "pose_workload": "fixed poses spaced around the track" if case == "scan" else "vehicle motion",
                                   "controller": runners[key].controller,
                                   "controller_config": asdict(runners[key].navigator.config) if runners[key].navigator else None,
                                   "backend": backend, "graph_kind": runners[key].graph_kind,
+                                  "lidar_backend": lidar_backend if case != "physics" else None,
                                   "summary": summary, "trials": samples[key]})
-        print(f"MEDIAN N={count} {case} {integrator}/{backend}: "
+        print(f"MEDIAN N={count} {case} {lidar_backend} {integrator}/{backend}: "
               f"{summary['median_aggregate_environment_transitions_per_second']:.0f} aggregate transitions/s; "
               f"{summary['median_batch_transitions_per_second']:.0f} batch transitions/s"
               + (" [variable timing: max/min > 1.2]" if summary["timing_variable"] else ""), flush=True)
+    report["lidar_speedups"] = []
+    if args.lidar_backend == "both":
+        for result in report["results"]:
+            if result["lidar_backend"] != "mesh":
+                continue
+            candidate = next(r for r in report["results"] if
+                             (r["environments"], r["case"], r["integrator"], r["backend"], r["lidar_backend"]) ==
+                             (result["environments"], result["case"], result["integrator"], result["backend"], "grid"))
+            speedup = result["summary"]["median_seconds"] / candidate["summary"]["median_seconds"]
+            report["lidar_speedups"].append({"environments": result["environments"], "case": result["case"],
+                                             "integrator": result["integrator"], "backend": result["backend"],
+                                             "grid_over_mesh": speedup})
+            print(f"GRID/MESH N={result['environments']} {result['case']}: {speedup:.3f}x "
+                  "(above 1 means grid is faster)", flush=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     if args.profile:
         runner = make_runner("lidar", "eager", device, args.substeps, args.physics,
-                             args.lidar_beams, min(env_counts), integrators[0], track=args.track)
+                             args.lidar_beams, min(env_counts), integrators[0], track=args.track,
+                             lidar_backend=lidar_backends[-1], grid_cell_size=args.grid_cell_size)
         profile = cProfile.Profile()
         profile.runcall(trial, runner, "lidar", min(transitions, hz), warmup, args.record_hz,
                         args.warmup_wall_seconds)

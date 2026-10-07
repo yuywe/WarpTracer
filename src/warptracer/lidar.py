@@ -22,8 +22,14 @@ class LidarConfig:
     # None places the sensor 2.5 cm above the chassis top, 12 cm forward of COM.
     mount_position: tuple | None = None
     mount_rpy: tuple = (0.0, 0.0, 0.0)
+    backend: str = "mesh"
+    grid_cell_size: float = 0.025
 
     def __post_init__(self):
+        if self.backend not in ("mesh", "grid"):
+            raise ValueError("LiDAR backend must be mesh or grid")
+        if not np.isfinite(self.grid_cell_size) or self.grid_cell_size <= 0:
+            raise ValueError("Grid cell size must be finite and positive")
         if not isinstance(self.beams, int) or self.beams < 1:
             raise ValueError("LiDAR beams must be a positive integer")
         if not isinstance(self.frequency, int) or self.frequency < 1:
@@ -78,14 +84,19 @@ class LidarRecording:
 
 
 class MountedLidar:
-    """Reusable, device-resident scanner. The host vehicle is excluded from its mesh."""
+    """Reusable device-resident scanner; excludes the host vehicle."""
     def __init__(self, track, vehicle, config, device, batch_size=1):
         self.batch_size = batch_size
         self.config = config
         self.rays = config.rays()
         self.mount_position = config.mount_position or (0.12, 0.0, vehicle.height / 2 + 0.025)
         self.mount = wp.transform(self.mount_position, wp.quat_rpy(*config.mount_rpy))
-        if isinstance(track, OvalTrack):
+        if config.backend == "grid":
+            if not isinstance(track, OvalTrack):
+                raise ValueError("Grid LiDAR currently requires the oval track")
+            from .heightfield import GridScene, HeightField
+            self.scene = GridScene(HeightField.oval(track, config.grid_cell_size), device=device)
+        elif isinstance(track, OvalTrack):
             self.scene = Scene(*track.mesh(), device=device)
         else:
             # Cover every possible floor hit within range inside the enclosure.
