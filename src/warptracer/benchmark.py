@@ -112,6 +112,10 @@ def trial(runner, case, transitions, warmup, record_hz, warmup_wall_seconds=2.0)
     record_stride = transition_hz // record_hz
     warmup_count, warmup_elapsed = warm_up(runner, warmup, warmup_wall_seconds,
                                           transitions_per_chunk=transitions)
+    if sim.lidar is not None:
+        # Exclude warmup and the reset's initial scan from convergence counts.
+        sim.lidar.reset_statistics()
+        wp.synchronize_device(sim.model.device)
     records = []
 
     def sample():
@@ -147,6 +151,9 @@ def trial(runner, case, transitions, warmup, record_hz, warmup_wall_seconds=2.0)
         raise RuntimeError("Benchmark step count mismatch")
     if case == "recording" and not all(np.isfinite(item[0]).all() for item in records):
         raise RuntimeError("Recording contains non-finite poses")
+    diagnostics = sim.lidar.diagnostics() if sim.lidar is not None else None
+    if diagnostics and diagnostics["iteration_limit_events"]:
+        raise RuntimeError(f"Distance-field benchmark exhausted the march budget: {diagnostics}")
     return {
         "elapsed_seconds": elapsed,
         "cpu_process_seconds": cpu_elapsed,
@@ -161,6 +168,7 @@ def trial(runner, case, transitions, warmup, record_hz, warmup_wall_seconds=2.0)
         "simulated_seconds_per_second": None if case == "scan" else transitions * runner.substeps * sim.dt / elapsed,
         "recorded_frames": len(records),
         "checked_environments": sim.num_envs,
+        "march_diagnostics": diagnostics,
         "wall_contact_substeps": sim.wall_contact_substeps.numpy().tolist() if sim.engine == "lean" else None,
         "final_pose": (q if sim.num_envs == 1 else q[0]).tolist(),
         "final_velocity": (qd if sim.num_envs == 1 else qd[0]).tolist(),
@@ -188,7 +196,7 @@ def main(argv=None, *, default_preset=None):
     parser = argparse.ArgumentParser(prog="warptracer benchmark",
                                      description="Choose a preset; add options only to override its settings")
     parser.add_argument("preset", nargs="?", choices=PRESETS, default=default_preset,
-                        help="quick: execution/replay; fusion: integration; batches: scaling; navigation: room control; oval: track control; grid: mesh vs height field")
+                        help="quick: execution/replay; fusion: integration; batches: scaling; navigation: room control; oval: track control; grid: mesh vs EDT marching")
     parser.add_argument("--device", default=None, help="GPU presets require CUDA; quick selects CUDA if available, else CPU")
     parser.add_argument("--physics", choices=("lean", "newton"), default="lean")
     parser.add_argument("--track", choices=("room", "oval"), default="room", help="Preset chooses the track")
@@ -257,7 +265,7 @@ def main(argv=None, *, default_preset=None):
     print(f"LiDAR: {args.lidar_beams} rays at {hz} Hz. Warmup per trial: at least "
           f"{args.warmup_wall_seconds:g} real seconds AND {warmup / hz:g} simulated seconds.", flush=True)
     print(f"LiDAR geometry: {', '.join(lidar_backends)}" +
-          (f"; grid cells {args.grid_cell_size:g} m" if "grid" in lidar_backends else ""), flush=True)
+          (f"; EDT sphere tracing, grid samples {args.grid_cell_size:g} m" if "grid" in lidar_backends else ""), flush=True)
     if "graph" in backends and not device.is_cuda:
         print("CPU API graph replay is not a CUDA performance measurement.", flush=True)
     scan_comparison = None
@@ -270,6 +278,11 @@ def main(argv=None, *, default_preset=None):
               f"p99={errors['p99']:.4f} m; max={errors['max']:.4f} m; "
               f"{scan_comparison['valid_mismatch_count']}/{scan_comparison['rays']} hit/miss differences. "
               "Grid geometry is an approximation, not exact mesh parity.", flush=True)
+        diagnostics = scan_comparison["march_diagnostics"]
+        print(f"EDT march: max {diagnostics['max_iterations_observed']} iterations; "
+              f"{diagnostics['iteration_limit_events']} budget-exhaustion events.", flush=True)
+        if diagnostics["iteration_limit_events"]:
+            raise RuntimeError("Scan comparison exhausted the distance-field march budget")
     runners, validations = {}, []
     for count in env_counts:
         for case in cases:
@@ -307,7 +320,7 @@ def main(argv=None, *, default_preset=None):
                   f"{result['aggregate_environment_transitions_per_second']:.0f} aggregate transitions/s; "
                   f"{result['batch_transitions_per_second']:.0f} batch transitions/s", flush=True)
     report = {
-        "schema_version": 3,
+        "schema_version": 4,
         "preset": args.preset,
         "device": str(device), "device_name": device.name, "platform": platform.platform(),
         "python": platform.python_version(), "versions": {p: version(p) for p in ("warp-lang", "newton", "numpy")},
@@ -338,6 +351,7 @@ def main(argv=None, *, default_preset=None):
                                   "controller_config": asdict(runners[key].navigator.config) if runners[key].navigator else None,
                                   "backend": backend, "graph_kind": runners[key].graph_kind,
                                   "lidar_backend": lidar_backend if case != "physics" else None,
+                                  "lidar_algorithm": runners[key].sim.lidar.algorithm if runners[key].sim.lidar else None,
                                   "summary": summary, "trials": samples[key]})
         print(f"MEDIAN N={count} {case} {lidar_backend} {integrator}/{backend}: "
               f"{summary['median_aggregate_environment_transitions_per_second']:.0f} aggregate transitions/s; "

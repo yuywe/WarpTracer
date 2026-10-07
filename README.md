@@ -39,13 +39,13 @@ The replay shows recorded motion; moving its camera does not rerun physics.
 | --- | --- | --- |
 | LiDAR navigation replay | `uv run warptracer demo` | `outputs/disparity.html` |
 | Elevated oval track replay | `uv run warptracer demo oval` | `outputs/oval.html` |
-| Oval with grid-based 3D LiDAR | `uv run warptracer demo oval-grid` | `outputs/oval-grid.html` |
+| Oval with EDT-based 3D LiDAR | `uv run warptracer demo oval-grid` | `outputs/oval-grid.html` |
 | Acceleration and braking check | `uv run warptracer demo accelerate-brake` | `outputs/accelerate-brake.html` |
 | Circle driving check | `uv run warptracer demo circle` | `outputs/circle.html` |
 | Quick performance check | `uv run warptracer benchmark` | `outputs/quick.json` |
 | LiDAR vs. disparity navigation | `uv run warptracer benchmark navigation` | `outputs/navigation.json` |
 | Navigation on the elevated oval | `uv run warptracer benchmark oval` | `outputs/oval-benchmark.json` |
-| Mesh vs. height-field LiDAR | `uv run warptracer benchmark grid` | `outputs/grid.json` |
+| Mesh vs. EDT LiDAR | `uv run warptracer benchmark grid` | `outputs/grid.json` |
 | Independent car scaling | `uv run warptracer benchmark batches` | `outputs/batches.json` |
 | Fused vs. unfused physics | `uv run warptracer benchmark fusion` | `outputs/fusion.json` |
 
@@ -58,8 +58,8 @@ The oval demo runs for 120 simulated seconds on a 16 × 10 m loop with a nominal
 LiDAR and replay use the same 3D track mesh. Open `outputs/oval.html` and check
 the printed lap/contact counts. See [tracks and terrain following](docs/tracks.md).
 
-The optional `oval-grid` demo casts full 3D rays against a height field and
-extruded occupancy cells. It creates no sensor triangle mesh. The mesh backend
+The optional `oval-grid` demo marches full 3D rays using precomputed EDT
+clearance and terrain height. It creates no sensor triangle mesh. The mesh backend
 remains the default: grid boundaries approximate the track, and GPU performance
 still needs measurement. See [the comparison workflow and accuracy limits](docs/grid-lidar.md).
 
@@ -78,7 +78,7 @@ remain available.
 Select **Runtime → Change runtime type → GPU**, then open either notebook:
 
 - [Driving replay](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/rigidbody_colab.ipynb): run setup, simulate, then display. It defaults to `scenario = "oval-grid"`; select `"oval"` for mesh sensing.
-- [Benchmarks](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/benchmark_colab.ipynb): run setup, choose a `preset`, then read the results. It defaults to `preset = "grid"` for the mesh/height-field comparison.
+- [Benchmarks](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/benchmark_colab.ipynb): run setup, choose a `preset`, then read the results. It defaults to `preset = "grid"` for the mesh/EDT comparison.
 
 Both reuse the same checkout and root uv environment. Output streams into the
 cell. No command construction or physics settings need editing for normal runs.

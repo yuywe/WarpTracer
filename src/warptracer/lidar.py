@@ -94,8 +94,8 @@ class MountedLidar:
         if config.backend == "grid":
             if not isinstance(track, OvalTrack):
                 raise ValueError("Grid LiDAR currently requires the oval track")
-            from .heightfield import GridScene, HeightField
-            self.scene = GridScene(HeightField.oval(track, config.grid_cell_size), device=device)
+            from .distance_field import GridScene, DistanceField
+            self.scene = GridScene(DistanceField.oval(track, config.grid_cell_size), device=device)
         elif isinstance(track, OvalTrack):
             self.scene = Scene(*track.mesh(), device=device)
         else:
@@ -114,6 +114,17 @@ class MountedLidar:
     def result(self):
         """Borrowed Scan buffers; the next scan overwrites them on the same device."""
         return self.sensor.result
+
+    @property
+    def algorithm(self):
+        return self.scene.algorithm if self.config.backend == "grid" else "mesh-bvh"
+
+    def reset_statistics(self):
+        if self.config.backend == "grid":
+            self.sensor.reset_statistics()
+
+    def diagnostics(self):
+        return self.sensor.diagnostics() if self.config.backend == "grid" else None
 
     def update(self, state, body, timestamp):
         wp.launch(_mount_pose, dim=self.batch_size, inputs=[state.body_q, body, self.mount],

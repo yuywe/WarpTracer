@@ -31,7 +31,7 @@ and eight strips across the lane. Playback and LiDAR use identical vertices and
 faces. Lean physics evaluates the matching analytic surface; tests check mesh
 height against it within 1 mm.
 `uv run warptracer demo oval-grid` keeps this road and physics but replaces
-sensor geometry with rasterized occupancy and a height field. See the
+sensor geometry with EDT clearance fields and sampled terrain height. See the
 [grid LiDAR experiment](grid-lidar.md) for its accuracy and timing comparison.
 
 ## Driving behavior

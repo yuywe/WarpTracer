@@ -1,12 +1,12 @@
 # Validation
 
 Checked on 2026-10-07 UTC with Linux x86-64, Python 3.12.14, Newton 1.6.0,
-Warp 1.17.0, and Viser 1.0.26. Dependency versions are unchanged; uv.lock now
-includes Viser in the base installation as well as the compatibility viz extra.
+Warp 1.17.0, and Viser 1.0.26. SciPy is now an explicit dependency for EDT
+preprocessing; the locked package versions remain unchanged.
 
 ## Behavior and capture checks
 
-Full suite: **107 passed, 32 skipped** (CUDA unavailable).
+Full suite: **106 passed, 32 skipped** (CUDA unavailable).
 This includes the 40 Hz recording and disparity bug regression checks.
 
 ## Run commands and presets
@@ -117,50 +117,73 @@ Trial variation was under 2% and all printed unfused/eager parity checks passed.
 This pasted report validates that workload; it does not establish grid results
 or execution of every CUDA test.
 
-## Height-field LiDAR experiment
+## EDT distance-field LiDAR
 
-Grid sensing is opt-in (`demo oval-grid` or `LidarConfig(backend="grid")`). It
-uses bilinear terrain and extruded occupancy cells, with conservative 8x8 tile
-bounds and full 3D rays. No sensor mesh/BVH is constructed. The sensor package
-in `src/racesense3d` remains unchanged as the reference.
+The old `heightfield.py` cell/tile traversal has been deleted. The `grid` backend
+now uses `distance_field.py`: one-time SciPy EDT preprocessing, normalized
+bilinear signed-clearance fields, and a Warp 3D ray marcher. Terrain-gradient
+bounds guide floor/roof jumps, and walls retain finite height. Mesh sensing is
+still the default and `src/racesense3d` remains unchanged.
 
-Independent checks cover sloped ground from above/below, holes, vertical and
-horizontal rays, sky misses, outside-grid origins, exact cell boundaries,
-partial tiles, quadratic bilinear intersections, range factors, near clipping,
-barrier roofs/sides and rays above barriers. Internal occupied-cell boundaries
-are not surfaces. Random rays against a sloped plane and extruded rectangle
-agree with independent mesh geometry; random terrain rays agree between tiled
-and unaccelerated traversal.
+Independent tests cover ground from above/below, holes, sky and outside-domain
+origins, bilinear quadratic terrain intersections, range factors, near clipping,
+wall entry/inside exit, roofs and passing above walls. Random 3D rays are compared
+with an independent sloped-plane/rectangular-obstacle mesh. Away from rounded
+EDT corner contours they agree within 1 cm; the corner exception is explicitly
+measured rather than claiming exact rectangular geometry. EDT sign, zero-contour
+placement and bilinear gradient bounds are checked. A deliberately insufficient
+iteration budget is reported separately from ordinary misses, and benchmarks
+reject exhausted scans. Reset clears statistics without rebuilding the fields.
 
-Grid navigation completes multiple laps over 120 seconds with zero contacts,
-valid scans and the oval's full elevation range. Three distinct spawns pass
-unfused/eager reference checks for graph and fused variants, including controller
-state, scans, contact counts and reset. At 40 Hz, batch entries match independent
-single-car runs. The fixed-scan benchmark keeps both geometry backends' poses
-identical and never advances physics. Tests check replay export, sensor metadata,
-comparison errors and speed-ratio fields, and zero physics-rate/null simulation
-speed for that scan-only case. CUDA grid tests remain skipped locally.
+The new default comparison covers 432 identical poses and 46,656 rays: 44,525
+common hits, 5.54 mm median error, 15.4 mm p95 and 27.7 mm p99. There are 29
+hit/miss disagreements (0.062%), 12 common-hit errors above 1 m and a 6.86 m
+maximum error. Raster/EDT corner and grazing decisions still cause large first-hit
+changes. Worst-ray origins, directions and both ranges remain in the report.
+Maximum iterations observed were 132 of 512, with zero budget-exhaustion events.
+See [the guide](docs/grid-lidar.md) for how to interpret tolerance and errors.
 
-The exact `uv run warptracer demo oval-grid` command exported HTML/NPZ/JSON,
-with four completed laps, 7,201 valid scans, a 0.400 m elevation range and zero
-contacts. It finished moving at 1.22 m/s; peak speed was 1.28 m/s. CPU elapsed
-time was 1.151 s including recording, which is a workflow check rather than a
-GPU prediction.
+The exact `uv run warptracer demo oval-grid` command exported HTML/NPZ/JSON:
+four completed laps, 7,201 valid scans, a 0.400 m elevation range and zero
+contacts. Peak speed was 1.28 m/s and final speed was 1.22 m/s. March convergence
+counts are included in the JSON. CPU elapsed time was 1.024 s including recording;
+this verifies the workflow and does not predict GPU speed.
 
-The 2.5 cm grid's identical-pose comparison samples 432 poses and 46,656 rays:
-44,524 common hits, 5.15 mm median error, 17.1 mm p95 and 31.0 mm p99. There are
-31 hit/miss disagreements (0.066%), 16 common-hit errors above 1 m, and a 6.82 m
-maximum error. These outliers occur around visibility changes at rasterized
-boundaries; they must not be hidden behind percentile statistics. The report
-retains worst-ray origins, directions and both ranges. See [the grid guide](docs/grid-lidar.md).
+Three distinct spawns pass unfused/eager reference checks for graph and fused
+variants, including scans, controller state, contacts and reset. At 40 Hz, batch
+entries match independent single cars. The scan-only benchmark keeps sensor poses
+identical across backends, never advances physics, and reports zero physics rate
+and null simulated-speed metrics. Replay metadata and schema-4 reports identify
+the EDT algorithm and separate convergence counts from timing. Both notebooks'
+code cells compile. Native CUDA execution of this replacement remains untested
+locally because a CUDA driver is unavailable.
 
-`benchmark grid` compares fixed-pose sensing and complete navigation separately,
-with backend-specific execution parity checks. A short one-trial CPU run verified
-all comparison/report paths for 1 and 3 cars. Its millisecond timing samples do
-not establish a speedup or predict the T4. The updated notebooks' code cells
-compile; hosted Colab execution of this new preset remains untested here.
-Mesh sensing stays the default. PNG import, arbitrary-map physics and slope
-gravity are not part of this change.
+A three-trial CPU check used 1 and 64 cars, 10 seconds of the 60 Hz schedule,
+fused CPU API graph replay, and a shortened 0.25-real-second warmup. All eight
+execution parity checks passed, every trial reported zero contacts, and EDT
+reported zero exhausted rays. Grid/mesh median speed ratios were 0.909x / 1.428x
+for fixed scans and 1.047x / 1.017x for navigation (1 / 64 cars). Single-car samples
+were short and these results are not a native CUDA speed prediction. The hosted
+Colab setup and GPU benchmark must still be run on the T4.
+
+### Historical T4 result: deleted traversal backend
+
+The user's three-trial, 100-second Tesla T4 comparison used 2.5 cm cells, 108
+beams at 60 Hz, fused/graph and default warmup. All printed execution parity
+checks passed. Median grid/mesh speed ratios were:
+
+| Cars | Fixed scans | Full navigation |
+| ---: | ---: | ---: |
+| 1 | 0.334x | 0.731x |
+| 64 | 0.471x | 0.736x |
+| 256 | 0.239x | 0.695x |
+
+That implementation was slower in every tested case. Its common-hit p99 error
+was 31.0 mm, with 31 hit/miss differences and a 6.82 m maximum error. These results
+motivate the replacement and are not measurements of EDT marching. Use the same
+`benchmark grid` preset on Colab to measure the new implementation.
+PNG import, arbitrary-map physics, stacked terrain and slope gravity remain
+outside this change.
 
 ## Fusion, batches, and wall-clock warmup
 

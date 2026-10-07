@@ -128,6 +128,7 @@ class Simulation:
         self._uploaded_command = None
         self._upload_command()
         if self.lidar is not None:
+            self.lidar.reset_statistics()
             self.lidar.update(self.state, self.body, 0.0)
 
     def set_action(self, throttle=0.0, brake=0.0, steering=0.0):
@@ -311,6 +312,7 @@ class Simulation:
             "track_kind": "oval" if self.oval else "room",
             "drive": asdict(self.drive) if self.driving else None,
             "lidar": ({**asdict(self.lidar.config), "mount_position": self.lidar.mount_position,
+                       "algorithm": self.lidar.algorithm, "march_diagnostics": self.lidar.diagnostics(),
                        "frame": "X forward, Y left, Z up", "pose_layout": "x,y,z,qx,qy,qz,qw",
                        "invalid_range": self.lidar.config.far,
                        "self_vehicle_excluded": True} if self.lidar is not None else None),

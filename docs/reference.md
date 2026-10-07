@@ -26,8 +26,8 @@ and positions match physics and playback. A floor patch extends beyond the walls
 by the maximum sensing range. This covers floor hits while the car is inside the
 enclosure. The added ray-casting mesh has 50 triangles and is never rendered.
 The oval instead scans the shared road/barrier mesh described in [tracks](tracks.md).
-The optional `LidarConfig(backend="grid")` uses 3D height-field/occupancy
-intersections on the oval, with the same device scan interface. The unchanged
+The optional `LidarConfig(backend="grid")` uses EDT clearance-guided 3D ray
+marching on the oval, with the same device scan interface. The unchanged
 `racesense3d` package remains the mesh reference. Grid geometry approximates the
 rendered road; see [accuracy and limits](grid-lidar.md).
 

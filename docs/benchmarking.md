@@ -17,7 +17,7 @@ trials. Every trial warms up for at least two real and two simulated seconds.
 | `quick` (default) | Eager vs. graph; physics, LiDAR, recording | 1 | 10 | `outputs/quick.json` |
 | `navigation` | LiDAR baseline vs. live disparity control | 1, 64, 256 | 100 | `outputs/navigation.json` |
 | `oval` | Physics, LiDAR and disparity on the elevated loop | 1, 64, 256 | 100 | `outputs/oval-benchmark.json` |
-| `grid` | Mesh vs. height-field sensing: fixed scans and oval navigation | 1, 64, 256 | 100 | `outputs/grid.json` |
+| `grid` | Mesh vs. EDT marching: fixed scans and oval navigation | 1, 64, 256 | 100 | `outputs/grid.json` |
 | `batches` | Physics and LiDAR as car count increases | 1, 64, 256, 1024 | 100 | `outputs/batches.json` |
 | `fusion` | Fused vs. unfused physics; physics and LiDAR | 1 | 1000 | `outputs/fusion.json` |
 
@@ -81,7 +81,7 @@ uv run warptracer benchmark navigation --envs 1
 | `--substeps 6` | 40 Hz control and sensing; recording also needs `--record-hz 20` or `40` |
 | `--output outputs/my-run.json` | Save to a different path |
 | `--track oval` | Use the elevated loop in a custom lean workload |
-| `--lidar-backend grid` | Optional height-field sensing on the oval; `both` compares against mesh |
+| `--lidar-backend grid` | Optional EDT ray marching on the oval; `both` compares against mesh |
 | `--grid-cell-size .02` | Change grid resolution in meters |
 
 Use `uv run warptracer benchmark --help` for all options. Low-level module

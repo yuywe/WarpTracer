@@ -4,7 +4,7 @@ import warp as wp
 
 from racesense3d.core import Scene
 from .driving import DriveConfig
-from .heightfield import GridScene, HeightField
+from .distance_field import GridScene, DistanceField
 from .lidar import LidarConfig
 from .scene import Vehicle
 from .terrain import road_rotation
@@ -38,11 +38,14 @@ def oval_scan_comparison(track, device, *, beams=108, cell_size=.025):
     positions = np.asarray(origins, np.float32)
     rotations = np.asarray(rotations, np.float32)
     mesh = Scene(*track.mesh(), device=device)
-    grid = GridScene(HeightField.oval(track, cell_size), device=device)
+    grid = GridScene(DistanceField.oval(track, cell_size), device=device)
     outputs = []
+    grid_diagnostics = None
     for scene in (mesh, grid):
-        outputs.append(scene.sensor(rays, batch_size=len(positions), near=config.near,
-                                    far=config.far).scan(positions, rotations).numpy())
+        sensor = scene.sensor(rays, batch_size=len(positions), near=config.near, far=config.far)
+        outputs.append(sensor.scan(positions, rotations).numpy())
+        if scene is grid:
+            grid_diagnostics = sensor.diagnostics()
     mesh_ranges, mesh_valid = outputs[0]
     grid_ranges, grid_valid = outputs[1]
     common = mesh_valid & grid_valid
@@ -63,6 +66,7 @@ def oval_scan_comparison(track, device, *, beams=108, cell_size=.025):
     return {
         "scope": "Identical sensor poses; 48 angles, three lane offsets, pitches 0/+15/-15 degrees",
         "reference": "mesh", "candidate": "grid", "grid_cell_size_m": cell_size,
+        "candidate_algorithm": grid.algorithm, "march_diagnostics": grid_diagnostics,
         "sensor_poses": len(positions), "rays": mesh_valid.size,
         "common_valid_rays": int(common.sum()), "valid_mismatch_count": int(mismatch.sum()),
         "valid_mismatch_fraction": float(mismatch.mean()),
@@ -72,5 +76,5 @@ def oval_scan_comparison(track, device, *, beams=108, cell_size=.025):
         "common_hits_within_5cm_fraction": float((error <= .05).mean()) if len(error) else None,
         "common_hit_errors_over_10cm": int((error > .1).sum()),
         "common_hit_errors_over_1m": int((error > 1).sum()), "worst_common_hits": worst,
-        "note": "Rasterized walls and bilinear terrain approximate the mesh; grazing/edge hits may differ substantially. Common-hit errors exclude validity mismatches, which are reported separately.",
+        "note": "EDT zero contours and bilinear terrain approximate the mesh; grazing/edge hits may differ substantially. Common-hit errors exclude validity mismatches, which are reported separately. Iteration-limit events are reported independently of geometric misses.",
     }
