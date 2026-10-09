@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 import warp as wp
 
+from racesense3d.sensors import Rays
 from warptracer.benchmark import main, make_runner, validate_pair
 from warptracer.distance_field import DistanceField, GridScene
 from warptracer.lidar import LidarConfig
@@ -13,6 +14,29 @@ from warptracer.terrain import OvalTrack
 
 DEVICES = ["cpu", pytest.param("cuda:0", marks=pytest.mark.skipif(
     not wp.is_cuda_available(), reason="CUDA driver unavailable"))]
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("cached", [False, True])
+def test_scale_grazing_ray_converges_beyond_old_budget(device, cached):
+    # Car 1526, beam 64, transition 39 of the 4096-car navigation workload.
+    # This shallow ray approaches the rising road slowly; 512 steps truncate
+    # a real hit. Preserve conservative jumps and the 2 mm surface tolerance.
+    scene = GridScene(DistanceField.oval(OvalTrack()), device)
+    direction = np.array([[-.9997666, -.00155008, .02155395]], np.float32)
+    direction /= np.linalg.norm(direction, axis=1, keepdims=True)
+    rays = Rays(direction, np.ones(1), (1,))
+    position = [[4.60247, 2.9986153, .5830985]]
+    limited = scene.sensor(rays, near=0, far=30, max_steps=512, cache_samples=cached)
+    assert not limited.scan(position).numpy()[1].any()
+    assert limited.diagnostics()["iteration_limit_events"] == 1
+    sensor = scene.sensor(rays, near=0, far=30, cache_samples=cached)
+    values, valid = sensor.scan(position).numpy()
+    assert valid.all() and values[0, 0] == pytest.approx(5.347, abs=.01)
+    diagnostics = sensor.diagnostics()
+    assert diagnostics["max_steps"] == 2048
+    assert 512 < diagnostics["max_iterations_observed"] < 2048
+    assert diagnostics["iteration_limit_events"] == 0
 
 
 @pytest.mark.parametrize("device", DEVICES)

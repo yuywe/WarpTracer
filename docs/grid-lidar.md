@@ -74,7 +74,11 @@ A too-near first hit still blocks farther geometry.
 
 Marching stops within **2 mm of the implicit surface**, or when the ray leaves
 the scene/range. This is a surface-distance tolerance, not a guaranteed 2 mm
-range error for a grazing ray. The budget is 512 iterations per ray. Exhausted
+range error for a grazing ray. The budget is 2,048 iterations per ray. Rare
+grazing rays in the 4,096-car navigation workload exceeded the previous
+512-step limit; one reproduced ray
+converged after 587 steps. Raising the ceiling preserves the tolerance and
+conservative jumps; ordinary rays still stop immediately on convergence. Exhausted
 rays return invalid and increment a separate counter; the comparison and timed
 benchmark reject runs with exhaustion rather than accepting incomplete scans as
 ordinary misses. `march_diagnostics` records tolerance, budget, observed maximum

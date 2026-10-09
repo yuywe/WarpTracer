@@ -257,7 +257,9 @@ class GridScene:
             high += field.wall_height
         self.z_bounds = wp.vec2(low - .01, high + .01)
 
-    def sensor(self, rays, batch_size=1, near=.02, far=30., *, tolerance=.002, max_steps=512, cache_samples=False):
+    # Large navigation batches expose grazing rays needing more than 512 steps.
+    # This is only a ceiling: converged rays still leave the loop immediately.
+    def sensor(self, rays, batch_size=1, near=.02, far=30., *, tolerance=.002, max_steps=2048, cache_samples=False):
         return GridSensor(self, rays, batch_size, near, far, tolerance, max_steps, cache_samples)
 
 

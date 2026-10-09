@@ -71,7 +71,9 @@ ends with that ray. Separate specialized kernels let uncached scans avoid the
 cache's conditional sampling path. `grid_sample_cache` identifies each variant;
 **CACHED/UNCACHED** above one means caching was faster. Defaults remain uncached
 until native GPU measurements support a change. `scale` automatically tests both.
-The scan geometry, tolerance and iteration budget are unchanged.
+Both sampling variants use identical geometry, tolerance and a 2,048-iteration
+ceiling. This ceiling accommodates rare grazing rays exposed by the 4,096-car
+navigation workload; exhausted rays still fail the benchmark.
 
 The lean, disparity and EDT modules skip unused environment backward-code
 generation. These modules serve model-free rollouts; this does not disable

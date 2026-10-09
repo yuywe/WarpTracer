@@ -223,8 +223,34 @@ trials and default warmup. Navigation starts are spread around the oval so the
 batch does not contain thousands of identical driving states. Schema 5 records
 sampling variants and separate cache speed ratios. Both notebook code-cell
 compilation and Python 3.10 syntax checks passed. GPU throughput and hosted
-Colab execution of this new preset remain to be measured. PPO inference,
+Colab execution of the complete preset remain to be measured. PPO inference,
 learning, reward/termination logic and automatic resets are not implemented.
+
+### Scale grazing-ray budget correction
+
+The user's T4 `scale` run passed all 18 execution-parity checks but aborted
+in the first 4,096-car cached-EDT navigation trial: two ray casts exhausted
+512 iterations. The reported identical-pose comparison had no exhaustion;
+it did not cover the later navigation poses. The completed moving-scan
+first trial measured 1,887,754 aggregate transitions/s for mesh, 2,710,511
+for cached EDT and 3,040,581 for uncached EDT. These are single-trial results,
+not three-trial medians or PPO training measurements.
+
+CPU reproduction found exhausted rays at cars 1522 and 1526, beam 64, in
+the first 50 navigation transitions. One isolated shallow ray at transition
+39 converged after 587 steps to a valid hit near 5.347 m with an increased
+budget. The default budget is now 2,048; geometry, tolerance and conservative
+jump bounds are unchanged. Rays still exit as soon as they converge, and
+benchmark rejection of exhausted casts remains enabled. Regression tests
+require this ray to exhaust the historical 512-step budget and converge with
+the new default, for both cached and uncached sampling. CUDA versions remain
+skipped locally pending a hosted rerun. The full suite passed 115 tests with
+39 CUDA skips. Both reproduced cars completed 1,200 navigation transitions
+(20 simulated seconds) with cached and uncached sampling, identical final
+poses, a maximum of 695 iterations and no exhausted casts. The full
+4,096-car uncached-EDT navigation workload also completed all 1,200 transitions
+on CPU with a maximum of 695 iterations and zero exhausted casts. This is a
+convergence check, not a GPU performance result.
 
 ### Historical T4 result: deleted traversal backend
 
