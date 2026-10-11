@@ -123,3 +123,18 @@ def test_nonfinite_motion_terminates_and_resets_without_nan_observations():
     assert torch.isfinite(env.observation).all() and torch.isfinite(env.final_observation).all()
     assert torch.isfinite(env.tensors['finished_laps']).all()
     assert np.isfinite(env.sim.state.body_q.numpy()).all()
+
+
+@pytest.mark.parametrize('device', DEVICES)
+@pytest.mark.parametrize('backend', ['eager', 'graph'])
+def test_recording_mode_retains_terminal_pose_and_scan_without_respawn(device, backend):
+    env = RacingEnv(EpisodeConfig(num_envs=1, max_steps=1), device=device,
+                    backend=backend, auto_reset=False)
+    initial = env.sim.state.body_q.numpy().copy()
+    env.step(torch.tensor([[0., 1.]], device=env.torch_device))
+    assert env.tensors['truncated'][0] == 1
+    assert env.tensors['episodes'][0] == 1 and env.tensors['lengths'][0] == 1
+    assert env.tensors['progress'][0] > 0
+    assert np.linalg.norm(env.sim.state.body_q.numpy()[0, :3] - initial[0, :3]) < .02
+    torch.testing.assert_close(env.observation, env.final_observation)
+    assert env.sim.lidar.diagnostics()['iteration_limit_events'] == 0

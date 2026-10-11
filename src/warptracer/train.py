@@ -28,6 +28,28 @@ def save_checkpoint(trainer, path):
     temporary.replace(path)
 
 
+def _rewind_log(path, iteration):
+    """Keep only complete records covered by the checkpoint being resumed."""
+    if not path.exists():
+        return
+    original = path.read_text()
+    kept = []
+    for line in original.splitlines():
+        try:
+            record = json.loads(line)
+            if record["iteration"] > iteration:
+                break
+        except (json.JSONDecodeError, KeyError, TypeError):
+            break
+        kept.append(line + "\n")
+    restored = "".join(kept)
+    if restored != original:
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(restored)
+        temporary.replace(path)
+        print(f"Restored training log through saved update {iteration}", flush=True)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="PPO on the elevated oval; presets choose all training settings")
     parser.add_argument("preset", choices=PRESETS, nargs="?", default="oval")
@@ -71,12 +93,17 @@ def main(argv=None):
                 "resumed_from": str(args.resume) if args.resume else None}
     (args.output / "config.json").write_text(json.dumps(settings, indent=2) + "\n")
     log_path = args.output / "training.jsonl"
+    if args.resume and args.resume.resolve() == checkpoint.resolve():
+        _rewind_log(log_path, trainer.iteration)
     print(f"PPO {args.preset}: {episode.num_envs} independent cars, {config.rollout_steps} rollout steps, "
           f"{updates} updates on {device}; checkpoint: {checkpoint}", flush=True)
     mode = "a" if state else "w"
+    # There is a valid recovery point even if the first update is interrupted.
+    save_checkpoint(trainer, checkpoint)
+    last_saved_iteration = trainer.iteration
     try:
         with log_path.open(mode) as log_file:
-            for _ in range(updates):
+            for run_update in range(updates):
                 metrics = trainer.iterate()
                 log_file.write(json.dumps(metrics, allow_nan=False) + "\n")
                 log_file.flush()
@@ -87,11 +114,13 @@ def main(argv=None):
                       f"training={metrics['training_transitions_per_second']:.0f}/s", flush=True)
                 # Save completed updates only. An interrupted update never replaces
                 # the last valid checkpoint with partially collected/trained state.
-                if trainer.iteration == 1 or trainer.iteration % 25 == 0:
+                if run_update == 0 or trainer.iteration % 25 == 0:
                     save_checkpoint(trainer, checkpoint)
+                    last_saved_iteration = trainer.iteration
             save_checkpoint(trainer, checkpoint)
+            last_saved_iteration = trainer.iteration
     except KeyboardInterrupt:
-        print(f"Interrupted; last completed saved update remains at {checkpoint}", flush=True)
+        print(f"Interrupted; checkpoint at {checkpoint} contains saved update {last_saved_iteration}", flush=True)
         return
     print(f"Saved {checkpoint}; evaluate with: uv run --extra rl warptracer evaluate {checkpoint}", flush=True)
 
@@ -106,7 +135,7 @@ def evaluate(argv=None):
     if state.get("format_version") != 1:
         parser.error("Unsupported checkpoint version")
     episode = replace(EpisodeConfig(**state["environment"]["config"]), num_envs=1)
-    env = RacingEnv(episode, device=args.device, track=OvalTrack(**state["environment"]["track"]))
+    env = RacingEnv(episode, device=args.device, track=OvalTrack(**state["environment"]["track"]), auto_reset=False)
     agent = ActorCritic(env.obs_dim, env.action_dim, state["ppo_config"]["hidden"]).to(env.torch_device)
     agent.load_state_dict(state["agent"])
     agent.eval()
@@ -115,6 +144,19 @@ def evaluate(argv=None):
     lidar_poses, ranges, masks = [], [], []
     total_return, progress = 0.0, 0.0
     reason = 0
+
+    def record(timestamp):
+        # Host recordings must wait for the Torch stream used by Warp kernels.
+        if env.device.is_cuda:
+            torch.cuda.current_stream(env.torch_device).synchronize()
+        q, qd = env.sim.snapshot()
+        lp, lr, lm = env.sim.lidar.snapshot()
+        times.append(timestamp)
+        poses.append(q); velocities.append(qd)
+        controls.append(env.sim.applied_controls.numpy()[0])
+        lidar_poses.append(lp); ranges.append(lr); masks.append(lm)
+
+    record(0.0)
     with torch.no_grad():
         for frame in range(episode.max_steps):
             action = agent.sample(env.observation, deterministic=True)[0]
@@ -123,17 +165,12 @@ def evaluate(argv=None):
             reason = int(env.tensors["reason"][0].item())
             if reason:
                 progress = env.tensors["finished_laps"][0].item()
-                # Auto-reset already occurred; omit its pose from the recording
-                # so a completed/crashed rollout does not show a teleport.
+            else:
+                progress = env.tensors["progress"][0].item() / (2*np.pi)
+            if (frame+1) % 2 == 0 or reason:
+                record((frame+1)/60)
+            if reason:
                 break
-            progress = env.tensors["progress"][0].item() / (2*np.pi)
-            if frame % 2 == 0:
-                q, qd = env.sim.snapshot()
-                lp, lr, lm = env.sim.lidar.snapshot()
-                times.append((frame+1)/60)
-                poses.append(q); velocities.append(qd)
-                controls.append(env.sim.applied_controls.numpy()[0])
-                lidar_poses.append(lp); ranges.append(lr); masks.append(lm)
     diagnostics = env.sim.lidar.diagnostics()
     if diagnostics["iteration_limit_events"]:
         raise RuntimeError(f"Evaluation exhausted LiDAR rays: {diagnostics}")

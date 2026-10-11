@@ -34,9 +34,12 @@ optimizations, rather than prerequisites to establish a correct baseline.
 
 Training writes `outputs/ppo/training.jsonl`, `config.json` and `checkpoint.pt`.
 The checkpoint includes actor, critic, optimizer, RNG state, episode buffers,
-vehicle state and update counters. It is saved atomically after the first update,
-every 25 updates, and at completion. An interrupted update preserves the last
-completed checkpoint. Resume adds updates to its saved configuration:
+vehicle state and update counters. It is saved atomically before training, after
+the first update of each run, every 25 updates, and at completion. An interrupted
+update preserves the last saved checkpoint, including the initial state if no
+update has finished. Resuming in the same output directory removes incomplete
+log records and records newer than that checkpoint. Resume adds updates to its
+saved configuration:
 
 ```bash
 uv run --extra rl warptracer train oval --resume outputs/ppo/checkpoint.pt
@@ -60,8 +63,10 @@ Evaluation creates a separate one-car environment and uses deterministic actions
 (the tanh of the actor mean). It stops at the first lap, collision, stall or time
 limit. Open `outputs/ppo/evaluation.html`; `evaluation.json` reports return,
 lap progress and the end reason. A single replay is a behavior check, not a
-multi-seed policy-quality result. The reset pose is omitted from recordings so
-finished episodes do not show a teleport.
+multi-seed policy-quality result. Evaluation retains the terminal state instead
+of auto-resetting. The replay includes the initial pose, 30 Hz samples and the
+final pose/scan, including episodes that end on their first transition. You can
+orbit the camera, pause and scrub the recording; there is no live training viewer.
 
 ## Environment contract
 

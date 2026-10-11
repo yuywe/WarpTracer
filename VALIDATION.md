@@ -6,7 +6,7 @@ preprocessing; PyTorch 2.8.0 is an optional `rl` dependency for training.
 
 ## Behavior and capture checks
 
-Full suite: **128 passed, 46 skipped** (CUDA unavailable), including optional
+Full suite: **134 passed, 48 skipped** (CUDA unavailable), including optional
 PPO tests.
 This includes the 40 Hz recording and disparity bug regression checks.
 
@@ -271,6 +271,17 @@ nonfinite-state recovery, selective timeouts, eager/captured parity, and 4,096-c
 mask/buffer indexing. Resume reproduces the next CPU update exactly, including
 policy weights, vehicle poses, reward/KL metrics, optimizer and RNG state.
 Native CUDA/stream tests are included but skipped locally without a driver.
+
+A follow-up review reproduced and fixed three recovery/recording gaps: no replay
+for a one-transition episode, no checkpoint if the first update was interrupted,
+and stale or incomplete JSONL records when resuming an older saved update. New
+regressions verify initial and terminal playback samples, eager/captured terminal
+pose and scan retention without respawn, an initial recovery checkpoint, and log
+rewinding to the resumed checkpoint. PPO rejects evaluation recording mode;
+existing checkpoints without the new auto-reset field still resume exactly.
+All three notebooks validate against the notebook schema without warnings and
+their code cells pass Python 3.10 syntax checks. Browser interaction and native
+GPU execution remain untested locally.
 
 A CPU learning check used seed 7, 64 cars, 64 rollout steps, 64-unit hidden layers,
 four epochs/eight minibatches, and 200 updates (819,200 aggregate transitions).

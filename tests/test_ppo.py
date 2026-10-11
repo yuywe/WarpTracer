@@ -65,6 +65,12 @@ def small_trainer():
     return PPO(env, PPOConfig(rollout_steps=8, hidden=32, epochs=2, minibatches=2))
 
 
+def test_ppo_rejects_recording_mode_to_prevent_stepping_finished_episodes():
+    env = RacingEnv(EpisodeConfig(num_envs=1), device='cpu', auto_reset=False)
+    with pytest.raises(ValueError, match='auto-reset'):
+        PPO(env)
+
+
 def test_policy_updates_are_finite_and_rollout_observations_are_copies():
     torch.manual_seed(2)
     trainer = small_trainer()
@@ -85,6 +91,8 @@ def test_checkpoint_resumes_optimizer_rng_and_each_episode_exactly(tmp_path):
     path = tmp_path / 'checkpoint.pt'
     save_checkpoint(trainer, path)
     state = torch.load(path, weights_only=True)
+    # Checkpoints made before the recording-mode option remain resumable.
+    state['environment'].pop('auto_reset', None)
     expected = trainer.iterate()
     parameters = copy.deepcopy(trainer.agent.state_dict())
     positions = trainer.env.sim.state.body_q.numpy()

@@ -120,6 +120,8 @@ def clipped_loss(agent, obs, latent, old_logp, old_value, advantage, returns, co
 
 class PPO:
     def __init__(self, env, config=None):
+        if not env.auto_reset:
+            raise ValueError("PPO requires an auto-reset environment; recording mode is for evaluation")
         self.env, self.config = env, config or PPOConfig()
         self.agent = ActorCritic(env.obs_dim, env.action_dim, self.config.hidden).to(env.torch_device)
         self.optimizer = torch.optim.Adam(self.agent.parameters(), lr=self.config.learning_rate, eps=1e-5)

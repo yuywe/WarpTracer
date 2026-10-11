@@ -214,17 +214,22 @@ class RacingEnv:
     final_observation is acquired BEFORE reset, including fresh terminal LiDAR.
     observation contains post-reset scans for finished cars, and next-state
     scans for survivors. terminated and truncated remain separate.
+    With auto_reset=False, terminal states are retained for recording; the caller
+    must stop stepping at the episode end or explicitly reset().
     """
-    def __init__(self, config=None, *, device=None, track=None, backend="graph"):
+    def __init__(self, config=None, *, device=None, track=None, backend="graph", auto_reset=True):
         self.config = config or EpisodeConfig()
         self.track = track or OvalTrack()
         if backend not in ("graph", "eager"):
             raise ValueError("backend must be graph or eager")
+        if type(auto_reset) is not bool:
+            raise ValueError("auto_reset must be a boolean")
         wp.init()
         self.device = wp.get_device(device or ("cuda:0" if wp.is_cuda_available() else "cpu"))
         self.torch_device = torch.device(str(self.device))
         self.num_envs = self.config.num_envs
         self.backend = backend
+        self.auto_reset = auto_reset
         self.obs_dim, self.action_dim = 114, 2
         self.graph = None
         with self._scope():
@@ -291,9 +296,10 @@ class RacingEnv:
             c.progress_scale, c.collision_penalty, c.lap_bonus, c.time_penalty], device=self.device)
         s.lidar.update(s.state, 0, 0.0)
         self._observe(self.final_obs_w)
-        self._spawn(b["done"])
-        # The second scan marches only respawned cars; surviving scans are kept.
-        s.lidar.update(s.state, 0, 0.0, active=b["done"])
+        if self.auto_reset:
+            self._spawn(b["done"])
+            # The second scan marches only respawned cars; surviving scans are kept.
+            s.lidar.update(s.state, 0, 0.0, active=b["done"])
         self._observe(self.obs_w)
 
     def reset(self):
@@ -328,11 +334,14 @@ class RacingEnv:
                   "commands": self.sim.device_commands, "contacts": self.sim.wall_contact_substeps,
                   "collision": self.sim.collision, "obs": self.obs_w, "final_obs": self.final_obs_w}
         return {"config": asdict(self.config), "track": asdict(self.track), "steps": self.sim.steps,
+                "auto_reset": self.auto_reset,
                 "arrays": {k: wp.to_torch(v).detach().cpu().clone() for k, v in arrays.items()}}
 
     def load_state_dict(self, state):
         if state["config"] != asdict(self.config) or state["track"] != asdict(self.track):
             raise ValueError("Checkpoint episode/track settings do not match this environment")
+        if state.get("auto_reset", True) != self.auto_reset:
+            raise ValueError("Checkpoint auto-reset setting does not match this environment")
         current = self.state_dict()["arrays"]
         if set(current) != set(state["arrays"]):
             raise ValueError("Checkpoint environment buffers are incomplete")
