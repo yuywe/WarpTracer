@@ -19,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 viz = ["viser==1.0.26"]
 dev = ["pytest>=8"]
+rl = ["torch==2.8.0"]
 
 [project.scripts]
 warptracer = "warptracer.cli:main"

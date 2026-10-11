@@ -9,6 +9,7 @@ Work is on the `performance-prototype` branch. The default lean physics model
 follows the road surface; the room remains flat. Newton is available for the
 original room experiments.
 Batched cars run independently and cannot see or collide with each other.
+PPO can train a policy from LiDAR and vehicle state on the elevated oval.
 
 ## Get started
 
@@ -49,6 +50,8 @@ The replay shows recorded motion; moving its camera does not rerun physics.
 | Large batches and moving LiDAR (up to 4,096 cars) | `uv run warptracer benchmark scale` | `outputs/scale.json` |
 | Independent car scaling | `uv run warptracer benchmark batches` | `outputs/batches.json` |
 | Fused vs. unfused physics | `uv run warptracer benchmark fusion` | `outputs/fusion.json` |
+| PPO training on the oval (1,024 cars, CUDA) | `uv run --extra rl warptracer train oval` | `outputs/ppo/checkpoint.pt` |
+| Evaluate a trained policy | `uv run --extra rl warptracer evaluate` | `outputs/ppo/evaluation.html` |
 
 The `scale`, `grid`, `oval`, `navigation`, `batches` and `fusion` presets require CUDA by default.
 They fail immediately if a GPU is unavailable. The quick benchmark also works
@@ -77,12 +80,13 @@ remain available.
 
 ## Colab
 
-Select **Runtime → Change runtime type → GPU**, then open either notebook:
+Select **Runtime → Change runtime type → GPU**, then open a notebook:
 
 - [Driving replay](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/rigidbody_colab.ipynb): run setup, simulate, then display. It defaults to `scenario = "oval-grid"`; select `"oval"` for mesh sensing.
 - [Benchmarks](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/benchmark_colab.ipynb): run setup, choose a `preset`, then read the results. It defaults to `preset = "scale"` for moving scans, sample-cache comparisons and navigation with up to 4,096 cars. Use `"grid"` to repeat the earlier fixed-scan comparison.
+- [PPO training](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/ppo_colab.ipynb): run setup, train with `preset = "oval"`, inspect learning, then evaluate and download the checkpoint/replay.
 
-Both reuse the same checkout and root uv environment. Output streams into the
+All reuse the same checkout and root uv environment. Output streams into the
 cell. No command construction or physics settings need editing for normal runs.
 
 ## Details and development
@@ -91,7 +95,9 @@ cell. No command construction or physics settings need editing for normal runs.
 - [Tracks and terrain following](docs/tracks.md)
 - [Grid LiDAR experiment, accuracy, and Colab comparison](docs/grid-lidar.md)
 - [Benchmark presets, timing, and batch API](docs/benchmarking.md)
+- [PPO presets, episodes, checkpoints and reference review](docs/ppo.md)
 - [Vehicle, LiDAR, controls, and saved arrays](docs/reference.md)
 - [Validation results and model limits](VALIDATION.md)
 
 Run tests with `uv run --extra dev pytest -q`.
+Include PPO tests with `uv run --extra dev --extra rl pytest -q`.

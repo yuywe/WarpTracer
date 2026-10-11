@@ -213,7 +213,7 @@ def _march(grid: wp.array2d(dtype=wp.vec3), origin: wp.vec2, cell: float,
     return wp.vec3(hit, float(steps), float(exhausted))
 
 
-def _cast_kernel(cache_samples):
+def _cast_kernel(cache_samples, selected=False):
     @wp.kernel(enable_backward=False, module="unique")
     def cast(grid: wp.array2d(dtype=wp.vec3), origin: wp.vec2, cell: float,
               wall_height: float, slope: float, z_bounds: wp.vec2,
@@ -221,8 +221,12 @@ def _cast_kernel(cache_samples):
               origins: wp.array(dtype=wp.vec3), rotations: wp.array(dtype=wp.mat33),
               directions: wp.array(dtype=wp.vec3), factors: wp.array(dtype=float), near: float, far: float,
               values: wp.array2d(dtype=float), valid: wp.array2d(dtype=int),
-              iteration_maxima: wp.array2d(dtype=int), limit_counts: wp.array2d(dtype=int)):
+              iteration_maxima: wp.array2d(dtype=int), limit_counts: wp.array2d(dtype=int),
+              active: wp.array(dtype=int)):
         b, r = wp.tid()
+        if wp.static(selected):
+            if active[b] == 0:
+                return
         factor = factors[r]
         result = _march(grid, origin, cell, wall_height, slope, z_bounds, origins[b],
                         rotations[b] * directions[r], far / factor, tolerance, max_steps, wp.static(cache_samples))
@@ -238,6 +242,7 @@ def _cast_kernel(cache_samples):
 
 
 _CAST = {cached: _cast_kernel(cached) for cached in (False, True)}
+_SELECTED_CAST = {cached: _cast_kernel(cached, True) for cached in (False, True)}
 
 
 class GridScene:
@@ -284,6 +289,7 @@ class GridSensor:
         self.valid = wp.empty(shape, dtype=int, device=scene.device)
         self.iteration_maxima = wp.zeros(shape, dtype=int, device=scene.device)
         self.limit_counts = wp.zeros(shape, dtype=int, device=scene.device)
+        self._unused_active = wp.zeros(1, dtype=int, device=scene.device)
         self.result = Scan(self.values, self.valid, (batch_size,) + rays.shape)
 
     def reset_statistics(self):
@@ -298,16 +304,21 @@ class GridSensor:
                 "mean_per_ray_max_iterations": float(counts.mean()),
                 "iteration_limit_events": int(self.limit_counts.numpy().sum())}
 
-    def scan_device(self, origins, rotations):
+    def scan_device(self, origins, rotations, active=None):
         if (origins.device != self.scene.device or rotations.device != self.scene.device or
                 origins.shape != (self.batch_size,) or rotations.shape != (self.batch_size,) or
                 origins.dtype != wp.vec3 or rotations.dtype != wp.mat33):
             raise ValueError("Device poses must match the sensor's device, batch size and pose types")
+        if active is not None and (active.device != self.scene.device or
+                active.shape != (self.batch_size,) or active.dtype != wp.int32):
+            raise ValueError("Active scan mask must be an int32 array matching the sensor batch/device")
         field = self.scene.field
-        wp.launch(_CAST[self.cache_samples], dim=self.values.shape, inputs=[self.scene.grid, wp.vec2(*field.origin), field.cell_size,
+        kernel = _CAST[self.cache_samples] if active is None else _SELECTED_CAST[self.cache_samples]
+        wp.launch(kernel, dim=self.values.shape, inputs=[self.scene.grid, wp.vec2(*field.origin), field.cell_size,
             field.wall_height, self.scene.slope, self.scene.z_bounds, self.tolerance, self.max_steps,
             origins, rotations, self.directions, self.factors, self.near, self.far],
-            outputs=[self.values, self.valid, self.iteration_maxima, self.limit_counts], device=self.scene.device)
+            outputs=[self.values, self.valid, self.iteration_maxima, self.limit_counts,
+                     self._unused_active if active is None else active], device=self.scene.device)
         return self.result
 
     def scan(self, positions, rotations=None):

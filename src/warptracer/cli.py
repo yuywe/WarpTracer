@@ -5,18 +5,26 @@ import sys
 
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
-    parser = argparse.ArgumentParser(description="Run a car replay or a named benchmark preset")
-    parser.add_argument("command", choices=("demo", "benchmark"))
+    parser = argparse.ArgumentParser(description="Run a car replay, benchmark, or PPO training")
+    parser.add_argument("command", choices=("demo", "benchmark", "train", "evaluate"))
     if not args:
         parser.print_help()
         return
-    if args[0] not in ("demo", "benchmark"):
+    if args[0] not in ("demo", "benchmark", "train", "evaluate"):
         parser.parse_args(args)
         return
     command, rest = args[0], args[1:]
     if command == "demo":
         from .demo import main as run_demo
         run_demo(rest)
-    else:
+    elif command == "benchmark":
         from .benchmark import main as run_benchmark
         run_benchmark(rest, default_preset="quick")
+    else:
+        try:
+            from .train import main as train, evaluate
+        except ModuleNotFoundError as error:
+            if error.name != "torch":
+                raise
+            parser.error("PPO requires the rl extra: uv run --extra rl warptracer " + command)
+        (train if command == "train" else evaluate)(rest)

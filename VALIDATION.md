@@ -1,12 +1,13 @@
 # Validation
 
-Checked on 2026-10-07 UTC with Linux x86-64, Python 3.12.14, Newton 1.6.0,
+Checked on 2026-10-11 UTC with Linux x86-64, Python 3.12.14, Newton 1.6.0,
 Warp 1.17.0, and Viser 1.0.26. SciPy is now an explicit dependency for EDT
-preprocessing; the locked package versions remain unchanged.
+preprocessing; PyTorch 2.8.0 is an optional `rl` dependency for training.
 
 ## Behavior and capture checks
 
-Full suite: **113 passed, 37 skipped** (CUDA unavailable).
+Full suite: **128 passed, 46 skipped** (CUDA unavailable), including optional
+PPO tests.
 This includes the 40 Hz recording and disparity bug regression checks.
 
 ## Run commands and presets
@@ -20,7 +21,7 @@ These CPU runs verify the workflows, not new GPU performance.
 
 CLI tests check preset selection, explicit overrides, navigation vs. LiDAR
 workloads, fusion variants, recording, replay export, and immediate failure when
-a GPU preset is requested without CUDA. Both notebooks' code cells compile;
+a GPU preset is requested without CUDA. All three notebooks' code cells compile;
 actual hosted Colab execution remains untested here.
 
 The default scan is now 108 rays; both demo and benchmark accept
@@ -223,8 +224,8 @@ trials and default warmup. Navigation starts are spread around the oval so the
 batch does not contain thousands of identical driving states. Schema 5 records
 sampling variants and separate cache speed ratios. Both notebook code-cell
 compilation and Python 3.10 syntax checks passed. GPU throughput and hosted
-Colab execution of the complete preset remain to be measured. PPO inference,
-learning, reward/termination logic and automatic resets are not implemented.
+Colab execution of the complete preset remained unmeasured at this stage.
+This section predates the PPO/episode implementation below.
 
 ### Scale grazing-ray budget correction
 
@@ -251,6 +252,42 @@ poses, a maximum of 695 iterations and no exhausted casts. The full
 4,096-car uncached-EDT navigation workload also completed all 1,200 transitions
 on CPU with a maximum of 695 iterations and zero exhausted casts. This is a
 convergence check, not a GPU performance result.
+
+## PPO and batched episodes
+
+The independent PPO implementation references UCI warporacer at e16e447 and
+warporacer3d at 0d8e059; source review and differences are documented in
+`docs/ppo.md`. The references were not executed or audited for policy quality.
+The environment exposes borrowed Torch views of Warp observations and episode
+outputs, captures physics/sensing/reward/reset operations, and uses the current
+Torch CUDA stream. Selected reset scans preserve surviving cars' ranges and
+iteration statistics. Policy actions use tanh-transformed Gaussian likelihoods.
+
+Tests independently check transformed likelihood against Torch's distribution
+transform, saturated-action finiteness, positive/negative surrogate clipping,
+hand-computed time-limit and terminal GAE, copied rollout observations, finite
+parameter changes, signed angle wrap and lap termination, collision precedence,
+nonfinite-state recovery, selective timeouts, eager/captured parity, and 4,096-car
+mask/buffer indexing. Resume reproduces the next CPU update exactly, including
+policy weights, vehicle poses, reward/KL metrics, optimizer and RNG state.
+Native CUDA/stream tests are included but skipped locally without a driver.
+
+A CPU learning check used seed 7, 64 cars, 64 rollout steps, 64-unit hidden layers,
+four epochs/eight minibatches, and 200 updates (819,200 aggregate transitions).
+Before and after training, a separate seed-99 evaluation ran 32 cars for 1,200
+transitions (20 simulated seconds per car), with deterministic actions. The
+untrained policy had mean step reward 0.0100, 15 completed failure episodes and
+zero completed laps. The trained policy had mean step reward 0.3148 and 64
+completed episodes, all successful laps. Both evaluations had zero exhausted
+LiDAR rays; the trained evaluation's maximum was 721 march iterations.
+This is one training seed on the analytic oval, not broad convergence evidence.
+
+The saved policy also passed the actual `warptracer evaluate` workflow: one
+successful lap, return 181.015, 560 transitions (9.33 simulated seconds), and
+zero exhausted rays. Viser HTML, trajectory NPZ and metrics JSON were exported.
+No native GPU training or interactive browser/hosted Colab run was performed
+locally. CPU rates do not predict T4 training throughput. The smoke training
+entry point, checkpoint save/resume and all notebook code cells are checked.
 
 ### Historical T4 result: deleted traversal backend
 
@@ -413,5 +450,7 @@ package; the optional grid backend approximates the oval with height/occupancy
 arrays. The host vehicle is excluded. Mesh sensor geometry matches playback;
 the grid approximation can differ at rasterized boundaries.
 Independent environments now share static geometry and run in batches.
-Moving obstacles, scan distortion, per-environment auto-reset,
-rewards, and PPO are not implemented.
+Moving obstacles and scan distortion are not implemented. The optional PPO
+interface adds rewards, episode termination and individual automatic resets
+for the elevated oval; it does not add car-to-car interactions or calibrated
+vehicle/terrain dynamics.

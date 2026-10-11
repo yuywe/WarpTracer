@@ -34,6 +34,7 @@ of the same static enclosure. They do not interact. Physics/LiDAR/recording case
 use scripted circle commands. Navigation consumes scans to choose controls, so
 its comparison includes both controller work and the changed trajectory.
 These benchmarks contain no learning, policy inference, rewards or auto-resets.
+For the complete training workflow, see [PPO](ppo.md).
 
 `grid` also measures **fixed-pose scans without physics or controller work**.
 Both sensor backends see identical car poses spaced around the track. For that
@@ -42,7 +43,7 @@ is zero, and simulation-speed metrics are null. The preset measures mesh/grid
 scan errors before timing and prints their median-time speed ratio. See the
 [grid experiment](grid-lidar.md) for accuracy limits and how to read the report.
 
-## Large batches for future PPO rollouts
+## Large batches for PPO rollout planning
 
 ```bash
 uv run warptracer benchmark scale
@@ -77,7 +78,7 @@ navigation workload; exhausted rays still fail the benchmark.
 
 The lean, disparity and EDT modules skip unused environment backward-code
 generation. These modules serve model-free rollouts; this does not disable
-backpropagation through a future PPO policy network. The original Newton and
+backpropagation through the PPO policy network. The original Newton and
 mesh sensor packages are unchanged.
 
 At 4,096 cars, one 108-beam scan contains **442,368 rays**. A faster sensor can

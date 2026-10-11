@@ -130,11 +130,16 @@ class MountedLidar:
     def diagnostics(self):
         return self.sensor.diagnostics() if self.config.backend == "grid" else None
 
-    def update(self, state, body, timestamp):
+    def update(self, state, body, timestamp, active=None):
+        if active is not None and self.config.backend != "grid":
+            raise ValueError("Selected-car scans require grid LiDAR")
         wp.launch(_mount_pose, dim=self.batch_size, inputs=[state.body_q, body, self.mount],
                   outputs=[self.poses, self.sensor.origins, self.sensor.rotations],
                   device=self.scene.device)
-        self.sensor.scan_device(self.sensor.origins, self.sensor.rotations)
+        if active is None:
+            self.sensor.scan_device(self.sensor.origins, self.sensor.rotations)
+        else:
+            self.sensor.scan_device(self.sensor.origins, self.sensor.rotations, active=active)
         self.timestamp = float(timestamp)
 
     def snapshot(self):
