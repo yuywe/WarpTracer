@@ -80,7 +80,11 @@ LiDAR launch marches only reset cars, not the whole batch.
 
 CUDA arrays alias Torch buffers without host transfers. Warp kernels and captured
 environment graphs run on the current Torch CUDA stream. Policy inference and
-losses run on that same device. The rollout never calls `done.any()` or copies
+losses run on that same device. Graph construction uses a retained nondefault
+Warp stream because Torch's default CUDA stream cannot be captured. Setup waits
+order the two streams; graph replay follows the caller's current Torch stream.
+Nested scopes reuse an existing wrapper for the same external stream handle.
+The rollout never calls `done.any()` or copies
 per-car observations to CPU. Aggregate episode statistics, timing and LiDAR
 convergence checks are inspected between updates. Training refuses an exhausted
 EDT scan instead of silently learning from an incomplete one.

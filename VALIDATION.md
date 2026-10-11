@@ -6,7 +6,7 @@ preprocessing; PyTorch 2.8.0 is an optional `rl` dependency for training.
 
 ## Behavior and capture checks
 
-Full suite: **134 passed, 48 skipped** (CUDA unavailable), including optional
+Full suite: **137 passed, 49 skipped** (CUDA unavailable), including optional
 PPO tests.
 This includes the 40 Hz recording and disparity bug regression checks.
 
@@ -282,6 +282,17 @@ existing checkpoints without the new auto-reset field still resume exactly.
 All three notebooks validate against the notebook schema without warnings and
 their code cells pass Python 3.10 syntax checks. Browser interaction and native
 GPU execution remain untested locally.
+
+The first hosted T4 PPO attempt failed before training during graph capture with
+`Warp error: unknown stream`. Warp v1.17 source and its PyTorch interoperability
+guidance identify the null/default Torch CUDA stream as unsuitable for capture.
+Graph construction now uses a retained Warp-owned nondefault stream with explicit
+setup dependencies. Replay remains on the caller's current Torch stream. Nested
+scopes reuse matching stream wrappers to avoid unregistering a still-used handle.
+Three CPU stream-contract simulations cover default/nondefault caller handles,
+setup ordering and nested wrapper reuse; these are not native GPU execution.
+Native PPO tests cover both Torch default and nondefault streams but remain
+skipped locally without a CUDA driver; the hosted retry is still required.
 
 A CPU learning check used seed 7, 64 cars, 64 rollout steps, 64-unit hidden layers,
 four epochs/eight minibatches, and 200 updates (819,200 aggregate transitions).

@@ -232,6 +232,7 @@ class RacingEnv:
         self.auto_reset = auto_reset
         self.obs_dim, self.action_dim = 114, 2
         self.graph = None
+        self._capture_stream = None
         with self._scope():
             self.sim = Simulation(track=self.track, scenario="drive", engine="lean", device=self.device,
                                   num_envs=self.num_envs, lidar=LidarConfig(backend="grid", frequency=60))
@@ -255,19 +256,40 @@ class RacingEnv:
                 self._operations()  # load kernels before capture
                 wp.synchronize_device(self.device)
                 self.reset()
-                with wp.ScopedCapture(device=self.device, force_module_load=False) as capture:
-                    self._operations()
-                self.graph = capture.graph
+                self._capture_graph()
                 self.reset()
+
+    def _capture_graph(self):
+        # Torch's default (null) CUDA stream supports launches but not capture.
+        # Use a retained Warp-owned stream for capture only; graph replay still
+        # follows the current Torch stream, including the default stream.
+        caller_stream = None
+        if self.device.is_cuda:
+            caller_stream = wp.get_stream(self.device)
+            self._capture_stream = wp.Stream(self.device)
+            self._capture_stream.wait_stream(caller_stream)
+        with wp.ScopedStream(self._capture_stream, sync_enter=False):
+            with wp.ScopedCapture(device=self.device, stream=self._capture_stream,
+                                  force_module_load=False) as capture:
+                self._operations()
+            self.graph = capture.graph
+        if caller_stream is not None:
+            caller_stream.wait_stream(self._capture_stream)
 
     @contextmanager
     def _scope(self):
         if self.device.is_cuda:
-            with wp.ScopedStream(wp.stream_from_torch(torch.cuda.current_stream(self.torch_device))):
-                yield
+            torch_stream = torch.cuda.current_stream(self.torch_device)
+            stream = wp.get_stream(self.device)
+            # Nested scopes must reuse the existing external-stream wrapper:
+            # destroying a duplicate wrapper unregisters that handle in Warp.
+            if int(stream.cuda_stream or 0) != torch_stream.cuda_stream:
+                stream = wp.stream_from_torch(torch_stream)
+            with wp.ScopedStream(stream):
+                yield stream
         else:
             with wp.ScopedDevice(self.device):
-                yield
+                yield None
 
     def _spawn(self, active):
         s, c, b = self.sim, self.config, self.buffers
@@ -318,12 +340,12 @@ class RacingEnv:
     def step(self, actions):
         if actions.shape != self.actions.shape or actions.device != self.torch_device or actions.dtype != torch.float32:
             raise ValueError("Actions must be float32 (num_envs, 2) on the environment device")
-        with self._scope():
+        with self._scope() as stream:
             self.actions.copy_(actions.detach())
             if self.graph is None:
                 self._operations()
             else:
-                wp.capture_launch(self.graph)
+                wp.capture_launch(self.graph, stream=stream)
         self.sim.steps += 4
         self.sim.invalidate_command_cache()
         return self.observation, self.tensors["reward"], self.tensors["terminated"], self.tensors["truncated"]

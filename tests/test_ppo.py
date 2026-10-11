@@ -116,10 +116,13 @@ def test_smoke_cli_saves_loadable_checkpoint_and_jsonl(tmp_path):
 
 
 @pytest.mark.skipif(not wp.is_cuda_available() or not torch.cuda.is_available(), reason='CUDA unavailable')
-def test_cuda_rollout_and_optimizer_on_nondefault_stream():
-    stream = torch.cuda.Stream()
+@pytest.mark.parametrize('stream_kind', ['default', 'nondefault'])
+def test_cuda_rollout_and_optimizer_on_torch_stream(stream_kind):
+    stream = torch.cuda.default_stream() if stream_kind == 'default' else torch.cuda.Stream()
     with torch.cuda.stream(stream):
         env = RacingEnv(EpisodeConfig(num_envs=8,max_steps=13), device='cuda:0')
+        assert env._capture_stream.cuda_stream != 0
+        assert env._capture_stream.cuda_stream != stream.cuda_stream
         trainer = PPO(env,PPOConfig(rollout_steps=8,epochs=1,minibatches=2,hidden=32))
         metrics = trainer.iterate()
     assert metrics['transitions'] == 64 and metrics['lidar_exhaustions'] == 0
