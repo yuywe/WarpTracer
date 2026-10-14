@@ -8,6 +8,8 @@ import numpy as np
 import warp as wp
 
 from racesense3d import box, from_quads, lidar
+from racesense3d.core import Scene
+from .terrain import OvalTrack
 
 
 @dataclass(frozen=True)
@@ -20,8 +22,17 @@ class LidarConfig:
     # None places the sensor 2.5 cm above the chassis top, 12 cm forward of COM.
     mount_position: tuple | None = None
     mount_rpy: tuple = (0.0, 0.0, 0.0)
+    backend: str = "mesh"
+    grid_cell_size: float = 0.025
+    grid_sample_cache: bool = False
 
     def __post_init__(self):
+        if self.backend not in ("mesh", "grid"):
+            raise ValueError("LiDAR backend must be mesh or grid")
+        if not np.isfinite(self.grid_cell_size) or self.grid_cell_size <= 0:
+            raise ValueError("Grid cell size must be finite and positive")
+        if not isinstance(self.grid_sample_cache, bool):
+            raise ValueError("Grid sample cache must be a boolean")
         if not isinstance(self.beams, int) or self.beams < 1:
             raise ValueError("LiDAR beams must be a positive integer")
         if not isinstance(self.frequency, int) or self.frequency < 1:
@@ -76,21 +87,30 @@ class LidarRecording:
 
 
 class MountedLidar:
-    """Reusable, device-resident scanner. The host vehicle is excluded from its mesh."""
+    """Reusable device-resident scanner; excludes the host vehicle."""
     def __init__(self, track, vehicle, config, device, batch_size=1):
         self.batch_size = batch_size
         self.config = config
         self.rays = config.rays()
         self.mount_position = config.mount_position or (0.12, 0.0, vehicle.height / 2 + 0.025)
         self.mount = wp.transform(self.mount_position, wp.quat_rpy(*config.mount_rpy))
-        # Cover every possible floor hit within range while the car is in the enclosure.
-        x, y = track.length / 2 + config.far, track.width / 2 + config.far
-        quads = [[(-x, -y, 0), (x, -y, 0), (x, y, 0), (-x, y, 0)]]
-        for position, dimensions in track.barriers():
-            center, half_size = np.asarray(position), np.asarray(dimensions) / 2
-            quads.extend(box(center - half_size, center + half_size))
-        self.scene = from_quads(quads, device=device)
-        self.sensor = self.scene.sensor(self.rays, batch_size=batch_size, near=config.near, far=config.far)
+        if config.backend == "grid":
+            if not isinstance(track, OvalTrack):
+                raise ValueError("Grid LiDAR currently requires the oval track")
+            from .distance_field import GridScene, DistanceField
+            self.scene = GridScene(DistanceField.oval(track, config.grid_cell_size), device=device)
+        elif isinstance(track, OvalTrack):
+            self.scene = Scene(*track.mesh(), device=device)
+        else:
+            # Cover every possible floor hit within range inside the enclosure.
+            x, y = track.length / 2 + config.far, track.width / 2 + config.far
+            quads = [[(-x, -y, 0), (x, -y, 0), (x, y, 0), (-x, y, 0)]]
+            for position, dimensions in track.barriers():
+                center, half_size = np.asarray(position), np.asarray(dimensions) / 2
+                quads.extend(box(center - half_size, center + half_size))
+            self.scene = from_quads(quads, device=device)
+        options = {"cache_samples": config.grid_sample_cache} if config.backend == "grid" else {}
+        self.sensor = self.scene.sensor(self.rays, batch_size=batch_size, near=config.near, far=config.far, **options)
         self.poses = wp.empty(batch_size, dtype=wp.transform, device=device)
         self.timestamp = 0.0
 
@@ -99,11 +119,27 @@ class MountedLidar:
         """Borrowed Scan buffers; the next scan overwrites them on the same device."""
         return self.sensor.result
 
-    def update(self, state, body, timestamp):
+    @property
+    def algorithm(self):
+        return self.scene.algorithm if self.config.backend == "grid" else "mesh-bvh"
+
+    def reset_statistics(self):
+        if self.config.backend == "grid":
+            self.sensor.reset_statistics()
+
+    def diagnostics(self):
+        return self.sensor.diagnostics() if self.config.backend == "grid" else None
+
+    def update(self, state, body, timestamp, active=None):
+        if active is not None and self.config.backend != "grid":
+            raise ValueError("Selected-car scans require grid LiDAR")
         wp.launch(_mount_pose, dim=self.batch_size, inputs=[state.body_q, body, self.mount],
                   outputs=[self.poses, self.sensor.origins, self.sensor.rotations],
                   device=self.scene.device)
-        self.sensor.scan_device(self.sensor.origins, self.sensor.rotations)
+        if active is None:
+            self.sensor.scan_device(self.sensor.origins, self.sensor.rotations)
+        else:
+            self.sensor.scan_device(self.sensor.origins, self.sensor.rotations, active=active)
         self.timestamp = float(timestamp)
 
     def snapshot(self):

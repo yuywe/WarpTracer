@@ -1,12 +1,13 @@
 # Validation
 
-Checked on 2026-10-05 with Linux x86-64, Python 3.12.14, Newton 1.6.0,
-Warp 1.17.0, and Viser 1.0.26. Dependency versions are unchanged; uv.lock now
-includes Viser in the base installation as well as the compatibility viz extra.
+Checked on 2026-10-11 UTC with Linux x86-64, Python 3.12.14, Newton 1.6.0,
+Warp 1.17.0, and Viser 1.0.26. SciPy is now an explicit dependency for EDT
+preprocessing; PyTorch 2.8.0 is an optional `rl` dependency for training.
 
 ## Behavior and capture checks
 
-Full suite: **75 passed, 23 skipped** (CUDA unavailable).
+Full suite: **137 passed, 49 skipped** (CUDA unavailable), including optional
+PPO tests.
 This includes the 40 Hz recording and disparity bug regression checks.
 
 ## Run commands and presets
@@ -20,7 +21,7 @@ These CPU runs verify the workflows, not new GPU performance.
 
 CLI tests check preset selection, explicit overrides, navigation vs. LiDAR
 workloads, fusion variants, recording, replay export, and immediate failure when
-a GPU preset is requested without CUDA. Both notebooks' code cells compile;
+a GPU preset is requested without CUDA. All three notebooks' code cells compile;
 actual hosted Colab execution remains untested here.
 
 The default scan is now 108 rays; both demo and benchmark accept
@@ -42,11 +43,10 @@ LiDAR. Unsafe odd substep counts and inconsistent sensor schedules are rejected.
 The benchmark independently checks eager/graph poses, velocities, applied
 controls, scan poses, ranges, masks, and device step counts before timing.
 
-Twenty-three CUDA tests were skipped in the local CPU-only environment. CPU graph replay
-uses Warp's CPU API capture. The user-supplied GPU benchmark below separately
-confirms lean CUDA graph/eager parity for its workload; it does not establish
-that the full CUDA test suite, the Newton CUDA backend, or the new fused/batched
-CUDA paths pass.
+Thirty-seven CUDA tests were skipped in the local CPU-only environment. CPU graph replay
+uses Warp's CPU API capture. The user-supplied GPU benchmarks below separately
+confirm execution parity for their workloads; they do not establish that the full
+CUDA test suite or the new sampling-cache/moving-scan paths pass.
 No automatic fallback hides capture errors.
 
 ## Disparity navigation
@@ -77,12 +77,258 @@ fused/unfused combinations were checked again with those batch sizes over ten
 simulated seconds; the 60-second recorded demo again traveled 51.6 m with zero
 wall-contact substeps. These CPU timing runs used one trial and a shortened
 0.25-second real warmup; they are behavior/parity checks, not GPU performance data.
-New controller CUDA execution and its
-throughput still need to be checked on a GPU; CPU results do not establish those.
+The user's later mesh-oval CUDA report below separately covers disparity
+throughput and reference parity; the new grid backend remains untested on CUDA.
 
 The unmodified published simulation previously achieved 5.38 million aggregate
 transitions/s on the user's Tesla T4 with 256 cars and 108-ray LiDAR at 60 Hz.
 That report used scripted commands; it is not a disparity-controller measurement.
+
+## Elevated oval
+
+`uv run warptracer demo oval` exported the 120-second replay with 7,201 scans,
+all valid. The car traveled about 130.5 m and completed 4.03 laps of angular
+progress, with zero barrier-contact substeps and a 0.400 m height range. Peak
+speed was 1.28 m/s; final speed was 1.23 m/s. The shared track geometry, recorded
+path and elevation trace were inspected. This was a CPU workflow/behavior check,
+not a GPU throughput measurement.
+
+Tests require multiple complete laps and zero contacts at 30, 40 and 60 Hz.
+They compare vehicle height/normal against the analytic surface, check mounted
+LiDAR tilt and world vertical velocity, and raycast the sampled road to within
+1 mm of its analytic height. Barrier meshes have closed seams and nondegenerate
+triangles. Outer and inner impacts keep the full chassis inside the lane, stop
+velocity, and clear contact counters on reset.
+
+Three distinct tilted/tangent spawns are compared against an unfused/eager
+reference across all four CPU execution combinations, including scans, controls,
+goals and contacts. Reset preserves their initial headings. The short demo and
+oval benchmark preset tests verify output/track metadata and that benchmark
+reports do not overwrite demo metadata. CUDA oval tests are skipped locally;
+the user's subsequent Colab report is recorded below.
+The ten-second CPU oval benchmark also passed full-state reference validation
+with 1 and 64 cars, using one trial and a shortened 0.25-second real warmup.
+
+The user supplied a Tesla T4 mesh-oval report on 2026-10-07 UTC: three trials,
+100 simulated seconds per car, graph/fused, 108 rays at 60 Hz, and the default
+warmup. Median aggregate navigation transitions/s were 6,490 / 372,202 / 919,642
+for 1 / 64 / 256 cars; corresponding batch rates were 6,490 / 5,816 / 3,592.
+Trial variation was under 2% and all printed unfused/eager parity checks passed.
+This pasted report validates that workload; it does not establish grid results
+or execution of every CUDA test.
+
+## EDT distance-field LiDAR
+
+The old `heightfield.py` cell/tile traversal has been deleted. The `grid` backend
+now uses `distance_field.py`: one-time SciPy EDT preprocessing, normalized
+bilinear signed-clearance fields, and a Warp 3D ray marcher. Terrain-gradient
+bounds guide floor/roof jumps, and walls retain finite height. Mesh sensing is
+still the default and `src/racesense3d` remains unchanged.
+
+Independent tests cover ground from above/below, holes, sky and outside-domain
+origins, bilinear quadratic terrain intersections, range factors, near clipping,
+wall entry/inside exit, roofs and passing above walls. Random 3D rays are compared
+with an independent sloped-plane/rectangular-obstacle mesh. Away from rounded
+EDT corner contours they agree within 1 cm; the corner exception is explicitly
+measured rather than claiming exact rectangular geometry. EDT sign, zero-contour
+placement and bilinear gradient bounds are checked. A deliberately insufficient
+iteration budget is reported separately from ordinary misses, and benchmarks
+reject exhausted scans. Reset clears statistics without rebuilding the fields.
+
+The new default comparison covers 432 identical poses and 46,656 rays: 44,525
+common hits, 5.54 mm median error, 15.4 mm p95 and 27.7 mm p99. There are 29
+hit/miss disagreements (0.062%), 12 common-hit errors above 1 m and a 6.86 m
+maximum error. Raster/EDT corner and grazing decisions still cause large first-hit
+changes. Worst-ray origins, directions and both ranges remain in the report.
+Maximum iterations observed were 132 of 512, with zero budget-exhaustion events.
+See [the guide](docs/grid-lidar.md) for how to interpret tolerance and errors.
+
+The exact `uv run warptracer demo oval-grid` command exported HTML/NPZ/JSON:
+four completed laps, 7,201 valid scans, a 0.400 m elevation range and zero
+contacts. Peak speed was 1.28 m/s and final speed was 1.22 m/s. March convergence
+counts are included in the JSON. CPU elapsed time was 1.024 s including recording;
+this verifies the workflow and does not predict GPU speed.
+
+Three distinct spawns pass unfused/eager reference checks for graph and fused
+variants, including scans, controller state, contacts and reset. At 40 Hz, batch
+entries match independent single cars. The scan-only benchmark keeps sensor poses
+identical across backends, never advances physics, and reports zero physics rate
+and null simulated-speed metrics. Replay metadata and schema-4 reports identify
+the EDT algorithm and separate convergence counts from timing. Both notebooks'
+code cells compile. A CUDA driver is unavailable locally. The user's subsequent T4 result below
+validates the original EDT workload; it does not validate the newer cache or
+moving-scan variants.
+
+A three-trial CPU check used 1 and 64 cars, 10 seconds of the 60 Hz schedule,
+fused CPU API graph replay, and a shortened 0.25-real-second warmup. All eight
+execution parity checks passed, every trial reported zero contacts, and EDT
+reported zero exhausted rays. Grid/mesh median speed ratios were 0.909x / 1.428x
+for fixed scans and 1.047x / 1.017x for navigation (1 / 64 cars). Single-car samples
+were short and these results are not a native CUDA speed prediction. The hosted
+Colab setup and GPU benchmark must still be run on the T4.
+
+### User-supplied T4 result: original EDT marcher
+
+The user supplied a three-trial Tesla T4 report with 100 seconds per car,
+graph/fused, 108 rays at 60 Hz and default warmup. All 12 execution-parity checks
+passed. The identical-pose comparison matched the CPU metrics at printed
+precision: p95 15.4 mm, p99 27.7 mm, maximum 6.8555 m, 29 / 46,656 validity
+disagreements, maximum 132 march iterations and zero budget exhaustion.
+Completion also implies timed EDT trials passed their exhaustion checks.
+The pasted output does not include wall-contact counters or lap progress.
+
+| Cars | Mesh scans/s | EDT scans/s | Mesh navigation transitions/s | EDT navigation transitions/s |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 16,946 | 13,250 | 6,480 | 7,071 |
+| 64 | 692,931 | 673,781 | 359,106 | 385,929 |
+| 256 | 1,230,670 | 1,573,477 | 885,550 | 1,028,179 |
+
+Rates aggregate all cars. Grid/mesh scan ratios were 0.782x / 0.972x / 1.279x;
+navigation ratios were 1.091x / 1.075x / 1.161x. Fixed scans have identical poses;
+closed-loop navigation paths can differ. These measurements precede sample
+caching, distributed navigation starts and the new moving-scan workload.
+
+### Large batches, controlled moving scans and sampling cache
+
+Optional per-ray caching keeps the four grid samples until that ray leaves a
+bilinear patch. Cached/uncached kernels are specialized separately. CPU checks
+compare 257 tilted poses, including ground/roof/sky rays, with identical masks
+and range agreement within 2e-5 m. The same terrain representation, 2 mm surface
+tolerance and 512-iteration budget are retained. Uncached remains the default.
+The lean, disparity and EDT modules disable unused adjoint code generation for
+model-free rollouts; Newton and the copied mesh sensor package are unchanged.
+
+The `moving_scan` workload replays a shared 4,096-pose tilted centerline loop
+with phase offsets per car. Tests require identical sensor poses across mesh,
+uncached EDT and cached EDT, motion, loop wraparound and reset. Captured/fused
+and eager/unfused executions agree at 40 and 60 Hz. Moving-scan reports have zero
+physics rate and null simulated-speed metrics. It is a prescribed trajectory,
+not a recorded physical vehicle path.
+
+CPU 4,096-car checks compare selected scan entries against independent cars.
+A separate 4,096-car navigation check compares poses, velocities, controls,
+ranges and masks at distinct initial phases against independent runs after two
+transitions. This is an indexing/behavior check, not sustained GPU throughput or
+PPO validation. CUDA variants of these tests remain skipped locally.
+
+A three-trial CPU API graph check exercised `scale` with 1 / 64 cars, 10 seconds
+of the 60 Hz schedule and shortened 0.25-real-second warmup. All 12 execution
+parity checks passed; all trials had zero wall contacts and zero exhausted rays.
+At 64 cars, cached/uncached ratios were 0.938x for moving scans and 0.954x for
+navigation: caching did not help this CPU workload. Uncached EDT/mesh ratios
+were 1.446x and 1.099x respectively. These are not predictions for a T4.
+
+The `scale` preset tests 256 / 1,024 / 4,096 cars, mesh / uncached EDT / cached
+EDT, moving scans and disparity navigation, with 20 seconds per trial, three
+trials and default warmup. Navigation starts are spread around the oval so the
+batch does not contain thousands of identical driving states. Schema 5 records
+sampling variants and separate cache speed ratios. Both notebook code-cell
+compilation and Python 3.10 syntax checks passed. GPU throughput and hosted
+Colab execution of the complete preset remained unmeasured at this stage.
+This section predates the PPO/episode implementation below.
+
+### Scale grazing-ray budget correction
+
+The user's T4 `scale` run passed all 18 execution-parity checks but aborted
+in the first 4,096-car cached-EDT navigation trial: two ray casts exhausted
+512 iterations. The reported identical-pose comparison had no exhaustion;
+it did not cover the later navigation poses. The completed moving-scan
+first trial measured 1,887,754 aggregate transitions/s for mesh, 2,710,511
+for cached EDT and 3,040,581 for uncached EDT. These are single-trial results,
+not three-trial medians or PPO training measurements.
+
+CPU reproduction found exhausted rays at cars 1522 and 1526, beam 64, in
+the first 50 navigation transitions. One isolated shallow ray at transition
+39 converged after 587 steps to a valid hit near 5.347 m with an increased
+budget. The default budget is now 2,048; geometry, tolerance and conservative
+jump bounds are unchanged. Rays still exit as soon as they converge, and
+benchmark rejection of exhausted casts remains enabled. Regression tests
+require this ray to exhaust the historical 512-step budget and converge with
+the new default, for both cached and uncached sampling. CUDA versions remain
+skipped locally pending a hosted rerun. The full suite passed 115 tests with
+39 CUDA skips. Both reproduced cars completed 1,200 navigation transitions
+(20 simulated seconds) with cached and uncached sampling, identical final
+poses, a maximum of 695 iterations and no exhausted casts. The full
+4,096-car uncached-EDT navigation workload also completed all 1,200 transitions
+on CPU with a maximum of 695 iterations and zero exhausted casts. This is a
+convergence check, not a GPU performance result.
+
+## PPO and batched episodes
+
+The independent PPO implementation references UCI warporacer at e16e447 and
+warporacer3d at 0d8e059; source review and differences are documented in
+`docs/ppo.md`. The references were not executed or audited for policy quality.
+The environment exposes borrowed Torch views of Warp observations and episode
+outputs, captures physics/sensing/reward/reset operations, and uses the current
+Torch CUDA stream. Selected reset scans preserve surviving cars' ranges and
+iteration statistics. Policy actions use tanh-transformed Gaussian likelihoods.
+
+Tests independently check transformed likelihood against Torch's distribution
+transform, saturated-action finiteness, positive/negative surrogate clipping,
+hand-computed time-limit and terminal GAE, copied rollout observations, finite
+parameter changes, signed angle wrap and lap termination, collision precedence,
+nonfinite-state recovery, selective timeouts, eager/captured parity, and 4,096-car
+mask/buffer indexing. Resume reproduces the next CPU update exactly, including
+policy weights, vehicle poses, reward/KL metrics, optimizer and RNG state.
+Native CUDA/stream tests are included but skipped locally without a driver.
+
+A follow-up review reproduced and fixed three recovery/recording gaps: no replay
+for a one-transition episode, no checkpoint if the first update was interrupted,
+and stale or incomplete JSONL records when resuming an older saved update. New
+regressions verify initial and terminal playback samples, eager/captured terminal
+pose and scan retention without respawn, an initial recovery checkpoint, and log
+rewinding to the resumed checkpoint. PPO rejects evaluation recording mode;
+existing checkpoints without the new auto-reset field still resume exactly.
+All three notebooks validate against the notebook schema without warnings and
+their code cells pass Python 3.10 syntax checks. Browser interaction and native
+GPU execution remain untested locally.
+
+The first hosted T4 PPO attempt failed before training during graph capture with
+`Warp error: unknown stream`. Warp v1.17 source and its PyTorch interoperability
+guidance identify the null/default Torch CUDA stream as unsuitable for capture.
+Graph construction now uses a retained Warp-owned nondefault stream with explicit
+setup dependencies. Replay remains on the caller's current Torch stream. Nested
+scopes reuse matching stream wrappers to avoid unregistering a still-used handle.
+Three CPU stream-contract simulations cover default/nondefault caller handles,
+setup ordering and nested wrapper reuse; these are not native GPU execution.
+Native PPO tests cover both Torch default and nondefault streams but remain
+skipped locally without a CUDA driver; the hosted retry is still required.
+
+A CPU learning check used seed 7, 64 cars, 64 rollout steps, 64-unit hidden layers,
+four epochs/eight minibatches, and 200 updates (819,200 aggregate transitions).
+Before and after training, a separate seed-99 evaluation ran 32 cars for 1,200
+transitions (20 simulated seconds per car), with deterministic actions. The
+untrained policy had mean step reward 0.0100, 15 completed failure episodes and
+zero completed laps. The trained policy had mean step reward 0.3148 and 64
+completed episodes, all successful laps. Both evaluations had zero exhausted
+LiDAR rays; the trained evaluation's maximum was 721 march iterations.
+This is one training seed on the analytic oval, not broad convergence evidence.
+
+The saved policy also passed the actual `warptracer evaluate` workflow: one
+successful lap, return 181.015, 560 transitions (9.33 simulated seconds), and
+zero exhausted rays. Viser HTML, trajectory NPZ and metrics JSON were exported.
+No native GPU training or interactive browser/hosted Colab run was performed
+locally. CPU rates do not predict T4 training throughput. The smoke training
+entry point, checkpoint save/resume and all notebook code cells are checked.
+
+### Historical T4 result: deleted traversal backend
+
+The user's three-trial, 100-second Tesla T4 comparison used 2.5 cm cells, 108
+beams at 60 Hz, fused/graph and default warmup. All printed execution parity
+checks passed. Median grid/mesh speed ratios were:
+
+| Cars | Fixed scans | Full navigation |
+| ---: | ---: | ---: |
+| 1 | 0.334x | 0.731x |
+| 64 | 0.471x | 0.736x |
+| 256 | 0.239x | 0.695x |
+
+That implementation was slower in every tested case. Its common-hit p99 error
+was 31.0 mm, with 31 hit/miss differences and a 6.82 m maximum error. These results
+motivate the replacement and are not measurements of EDT marching. Use the same
+`benchmark grid` preset on Colab to measure the new implementation.
+PNG import, arbitrary-map physics, stacked terrain and slope gravity remain
+outside this change.
 
 ## Fusion, batches, and wall-clock warmup
 
@@ -213,15 +459,20 @@ tested here.
 
 ## Model limits
 
-Lean is a flat-ground dynamic bicycle with illustrative parameters, two
-friction-limited axle forces, an implicit lateral/yaw prediction, and fixed
-height. Its rectangular wall check clamps the rotated chassis footprint and
-stops velocity. It does not simulate suspension, roll/pitch, free fall,
-calibrated tire slip curves, wheel spin, reverse throttle, or terrain following.
-Newton remains available for the earlier force/contact behavior.
+Lean uses a planar dynamic bicycle with illustrative parameters, two
+friction-limited axle forces and an implicit lateral/yaw prediction. Height is
+fixed in the room; the oval constrains height/tilt to its road surface and reports
+vertical motion. Chassis-footprint checks stop velocity at room walls or oval
+barriers. The force model does not simulate gravity along slopes, suspension,
+airborne motion, calibrated tire slip curves, wheel spin, or reverse throttle.
+Newton remains available for the earlier room force/contact behavior.
 
-LiDAR is instantaneous and noise-free, using the unchanged sensor package.
-The host vehicle is excluded; static wall/floor geometry is shared with playback.
+LiDAR is instantaneous and noise-free. Mesh sensing uses the unchanged sensor
+package; the optional grid backend approximates the oval with height/occupancy
+arrays. The host vehicle is excluded. Mesh sensor geometry matches playback;
+the grid approximation can differ at rasterized boundaries.
 Independent environments now share static geometry and run in batches.
-Moving obstacles, scan distortion, per-environment auto-reset,
-rewards, and PPO are not implemented.
+Moving obstacles and scan distortion are not implemented. The optional PPO
+interface adds rewards, episode termination and individual automatic resets
+for the elevated oval; it does not add car-to-car interactions or calibrated
+vehicle/terrain dynamics.

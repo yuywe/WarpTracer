@@ -2,10 +2,10 @@
 from pathlib import Path
 
 import numpy as np
+from .terrain import OvalTrack
 
 
 def save_html(trajectory, track, vehicle, path):
-    # Optional dependency: headless physics does not import or start Viser.
     import viser
 
     server = viser.ViserServer(host="127.0.0.1", port=0, verbose=False)
@@ -14,13 +14,18 @@ def save_html(trajectory, track, vehicle, path):
         server.initial_camera.position = (track.length, -track.width, max(track.length, track.width))
         server.initial_camera.look_at = (0.0, 0.0, 0.0)
         server.initial_camera.up = (0.0, 0.0, 1.0)
-        extent_x = track.length + 2 * track.barrier_thickness
-        extent_y = track.width + 2 * track.barrier_thickness
-        server.scene.add_box("/floor", dimensions=(extent_x, extent_y, 0.06),
-                             position=(0, 0, -0.03), color=(70, 75, 82))
-        for i, (position, dimensions) in enumerate(track.barriers()):
-            server.scene.add_box(f"/walls/{i}", dimensions=dimensions, position=position,
-                                 color=(153, 153, 153))
+        if isinstance(track, OvalTrack):
+            for name, (vertices, faces) in track.mesh_parts().items():
+                server.scene.add_mesh_simple(f"/track/{name}", vertices=vertices, faces=faces,
+                    color=(70, 75, 82) if name == "road" else (153, 153, 153), side="double")
+        else:
+            extent_x = track.length + 2 * track.barrier_thickness
+            extent_y = track.width + 2 * track.barrier_thickness
+            server.scene.add_box("/floor", dimensions=(extent_x, extent_y, 0.06),
+                                 position=(0, 0, -0.03), color=(70, 75, 82))
+            for i, (position, dimensions) in enumerate(track.barriers()):
+                server.scene.add_box(f"/walls/{i}", dimensions=dimensions, position=position,
+                                     color=(153, 153, 153))
         chassis = server.scene.add_box("/vehicle", dimensions=vehicle.dimensions,
                                        color=(30, 126, 238))
         scans = trajectory.lidar
