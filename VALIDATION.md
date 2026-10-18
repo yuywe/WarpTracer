@@ -1,14 +1,36 @@
 # Validation
 
-Checked on 2026-10-11 UTC with Linux x86-64, Python 3.12.14, Newton 1.6.0,
+Checked on 2026-10-18 UTC with Linux x86-64, Python 3.12.14, Newton 1.6.0,
 Warp 1.17.0, and Viser 1.0.26. SciPy is now an explicit dependency for EDT
 preprocessing; PyTorch 2.8.0 is an optional `rl` dependency for training.
 
 ## Behavior and capture checks
 
-Full suite: **137 passed, 49 skipped** (CUDA unavailable), including optional
-PPO tests.
+Full suite: **148 passed, 52 skipped** (CUDA unavailable), including optional
+PPO tests. Two additional PNG setup/swept-collision cases passed in the final
+focused map run (**13 passed, 3 CUDA skipped**).
 This includes the 40 Hz recording and disparity bug regression checks.
+
+## PNG training maps
+
+PNG integration checks use an offset rectangular ring rather than an oval.
+They cover image/world Y orientation and scale, opaque white versus gray/alpha
+pixels, inverted brightness, automatic/reversed routes, explicit CSV routes,
+rejection of ambiguous topology and unsafe clearance, route previews, and
+portable bitmap/route serialization. A one-beam scan hits the expected image
+wall in world coordinates without exhausting its march budget.
+
+Physics checks cover fused/unfused substep parity, the entire conservative chassis
+circle, and a deliberately oversized substep that would otherwise cross a thin
+wall between free endpoints. Episode checks cover CPU eager/graph parity,
+continuous signed progress across the route wrap, lap termination, selective
+resets, and exact next-transition equality after restoring the route cursor.
+The CLI completes PPO smoke training, resumes after the source PNG/JSON are
+deleted, and exports an evaluation JSON/NPZ/HTML from embedded checkpoint geometry.
+
+The map preview was visually inspected. All source/notebook code parses with
+Python 3.10 syntax. Actual Colab uploads, native CUDA execution of the new map
+kernels, and policy convergence/performance on user maps remain unverified here.
 
 ## Run commands and presets
 

@@ -9,7 +9,7 @@ Work is on the `performance-prototype` branch. The default lean physics model
 follows the road surface; the room remains flat. Newton is available for the
 original room experiments.
 Batched cars run independently and cannot see or collide with each other.
-PPO can train a policy from LiDAR and vehicle state on the elevated oval.
+PPO can train a policy from LiDAR and vehicle state on the elevated oval or a PNG occupancy map.
 
 ## Get started
 
@@ -51,6 +51,8 @@ The replay shows recorded motion; moving its camera does not rerun physics.
 | Independent car scaling | `uv run warptracer benchmark batches` | `outputs/batches.json` |
 | Fused vs. unfused physics | `uv run warptracer benchmark fusion` | `outputs/fusion.json` |
 | PPO training on the oval (1,024 cars, CUDA) | `uv run --extra rl warptracer train oval` | `outputs/ppo/checkpoint.pt` |
+| Prepare a PNG map once (set its meters/pixel) | `uv run warptracer map maps/my-track.png --resolution 0.05` | `outputs/maps/my-track.png` |
+| PPO on your PNG map | `uv run --extra rl warptracer train oval --map maps/my-track.png` | `outputs/ppo/checkpoint.pt` |
 | Evaluate a trained policy | `uv run --extra rl warptracer evaluate` | `outputs/ppo/evaluation.html` |
 
 The `scale`, `grid`, `oval`, `navigation`, `batches` and `fusion` presets require CUDA by default.
@@ -96,6 +98,7 @@ cell. No command construction or physics settings need editing for normal runs.
 - [Grid LiDAR experiment, accuracy, and Colab comparison](docs/grid-lidar.md)
 - [Benchmark presets, timing, and batch API](docs/benchmarking.md)
 - [PPO presets, episodes, checkpoints and reference review](docs/ppo.md)
+- [PNG map import, route preview and Colab upload](docs/png-maps.md)
 - [Vehicle, LiDAR, controls, and saved arrays](docs/reference.md)
 - [Validation results and model limits](VALIDATION.md)
 

@@ -8,6 +8,7 @@ import warp as wp
 
 from .scene import Track, Vehicle, build_model
 from .terrain import OvalTrack
+from .maps import MapTrack, track_state
 from .driving import DRIVING_SCENARIOS, DriveConfig, apply_tire_forces, scripted_driver, write_command
 from .lidar import LidarRecording, MountedLidar
 from .lean import LeanState, integrate_bicycle, integrate_bicycle_fused
@@ -45,8 +46,9 @@ class Simulation:
         self.vehicle = vehicle or Vehicle()
         self.drive = drive or DriveConfig()
         self.oval = isinstance(self.track, OvalTrack)
-        if self.oval and engine != "lean":
-            raise ValueError("Oval road following currently requires lean physics")
+        self.png_map = isinstance(self.track, MapTrack)
+        if (self.oval or self.png_map) and engine != "lean":
+            raise ValueError("Oval/PNG road following requires lean physics")
         self.road_parameters = (wp.vec4(self.track.lane_width, self.track.elevation,
                                        self.track.frequency, self.drive.ride_height(self.vehicle))
                                 if self.oval else wp.vec4())
@@ -92,6 +94,10 @@ class Simulation:
                 if radius * (a / b + ia / ib) >= self.track.lane_width:
                     raise ValueError("Oval lane must accommodate the car's conservative footprint")
                 self.initial_pose = self.track.pose(-np.pi / 2, self.drive.ride_height(self.vehicle))[None]
+            if self.png_map:
+                self.track.validate_vehicle(self.vehicle)
+                self.initial_pose = self.track.path(self.drive.ride_height(self.vehicle))[:1]
+                self.map_clearance = wp.array(self.track.clearance, dtype=float, device=chosen_device)
             self.initial_pose = np.repeat(self.initial_pose, num_envs, axis=0)
             self.lean_motion = wp.zeros(num_envs, dtype=wp.vec4, device=chosen_device)
             self.collision = wp.zeros(num_envs, dtype=int, device=chosen_device)
@@ -193,15 +199,31 @@ class Simulation:
         ]
 
     def _fused_physics_steps(self, substeps):
+        if self.png_map:
+            self._map_physics_steps(substeps)
+            return
         inputs = self._lean_inputs()
         # In-place output keeps the same pointers across every graph replay.
         inputs[5], inputs[6] = self.state.body_q, self.state.body_qd
         wp.launch(integrate_bicycle_fused, dim=self.num_envs, inputs=inputs + [substeps],
                   device=self.model.device)
 
+    def _map_physics_steps(self, substeps):
+        from .map_kernels import integrate_map
+        d, v = self.drive, self.vehicle
+        wp.launch(integrate_map, dim=self.num_envs, inputs=[self.state.body_q, self.lean_motion,
+            self.device_commands, self.applied_controls, self.collision, self.state.body_qd,
+            self.wall_contact_substeps, self.map_clearance, wp.vec2(*self.track.origin), self.track.resolution,
+            self.dt, v.mass, v.length, v.width, d.wheelbase, v.friction, d.lateral_stiffness,
+            d.rolling_drag, d.max_acceleration, d.max_braking, d.steering_rate, d.speed_gain, substeps],
+            device=self.model.device)
+
     def _physics_step(self):
         """One capture-safe substep; callers manage time and sensor scheduling."""
         if self.engine == "lean":
+            if self.png_map:
+                self._map_physics_steps(1)
+                return
             wp.launch(integrate_bicycle, dim=self.num_envs, inputs=self._lean_inputs(),
                       device=self.model.device)
             self.state, self.next_state = self.next_state, self.state
@@ -308,8 +330,8 @@ class Simulation:
             "simulated_seconds": total_steps * self.dt, "elapsed_seconds": elapsed,
             "steps_per_second": total_steps / elapsed,
             "timing_includes_pose_recording": record,
-            "track": asdict(self.track), "vehicle": asdict(self.vehicle),
-            "track_kind": "oval" if self.oval else "room",
+            "track": track_state(self.track), "vehicle": asdict(self.vehicle),
+            "track_kind": "png" if self.png_map else ("oval" if self.oval else "room"),
             "drive": asdict(self.drive) if self.driving else None,
             "lidar": ({**asdict(self.lidar.config), "mount_position": self.lidar.mount_position,
                        "algorithm": self.lidar.algorithm, "march_diagnostics": self.lidar.diagnostics(),

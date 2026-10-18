@@ -1,7 +1,7 @@
 # PPO on the elevated oval
 
 PPO controls steering and forward throttle/braking from 108 LiDAR beams and six
-vehicle/terrain features. Cars are independent copies of the oval. Training uses
+vehicle/terrain features. Cars are independent copies of the chosen map. Training uses
 lean physics, uncached EDT sensing and 60 Hz control (four 240 Hz substeps).
 
 ## Run it
@@ -18,6 +18,11 @@ uses 4,096. Start with `oval`: higher simulator throughput does not establish
 which batch size trains best. PyTorch 2.8 is installed only with the `rl` extra;
 existing demos and benchmarks do not need it. Its CUDA dependencies require
 several GB of disk space on Linux.
+
+To choose a PNG, prepare its scale once, then add `--map maps/my-track.png` to
+the training command. The preset still controls the training budget and car count.
+See [PNG maps](png-maps.md) for the short local workflow and Colab upload cell.
+Map geometry is embedded in checkpoints and automatically restored for evaluation/resume.
 
 | Preset | Device | Cars | Steps per car per rollout | PPO updates | Aggregate transitions |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -148,8 +153,8 @@ Warp interoperability: [v1.17 stream_from_torch](https://nvidia.github.io/warp/v
 
 ## Limits
 
-This first task is the analytic elevated oval, uncached EDT LiDAR and lean
-terrain-following physics. PNG map import, more tracks, domain randomization,
+Supported tasks are the analytic elevated oval and flat PNG occupancy tracks,
+with uncached EDT LiDAR and lean physics. Height-map import, domain randomization,
 reverse driving, multi-car interactions and calibrated slope/tire dynamics remain
 future work. The environment is a Torch vector interface, not a Gymnasium adapter.
 CPU correctness/learning checks do not establish native GPU performance or

@@ -90,7 +90,7 @@ def bicycle_step(pose: wp.transform, state: wp.vec4, command: wp.vec4, control: 
     heading += dt * next_yaw
     heading = wp.atan2(wp.sin(heading), wp.cos(heading))
     hit_wall = 0
-    if oval != 0:
+    if oval == 1:
         # Test the whole padded rectangle against both ellipses. Vertex checks
         # suffice for the convex outer boundary; inner checks include all edges.
         padded_length, padded_width = length + 2.0 * wall_padding, width + 2.0 * wall_padding
@@ -133,7 +133,7 @@ def bicycle_step(pose: wp.transform, state: wp.vec4, command: wp.vec4, control: 
             else:
                 x, y = 0.0, -b - padded_length
             hit_wall = 1
-    else:
+    elif oval == 0:
         # Exact axis extents of the oriented box inside a rectangular enclosure.
         hx = 0.5 * (wp.abs(wp.cos(heading)) * length + wp.abs(wp.sin(heading)) * width)
         hy = 0.5 * (wp.abs(wp.sin(heading)) * length + wp.abs(wp.cos(heading)) * width)
@@ -150,7 +150,7 @@ def bicycle_step(pose: wp.transform, state: wp.vec4, command: wp.vec4, control: 
         wp.vec3(wp.cos(heading) * next_u - wp.sin(heading) * next_v,
                 wp.sin(heading) * next_u + wp.cos(heading) * next_v, 0.0),
         wp.vec3(0.0, 0.0, next_yaw))
-    if oval != 0:
+    if oval == 1:
         gradient = road_gradient(x, road[1], road[2])
         z = road_height(x, road[1], road[2]) + road[3] * wp.sqrt(1.0 + gradient * gradient)
         rotation = road_rotation(heading, gradient)

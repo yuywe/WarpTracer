@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 from .terrain import OvalTrack
+from .maps import MapTrack
 
 
 def save_html(trajectory, track, vehicle, path):
@@ -11,10 +12,12 @@ def save_html(trajectory, track, vehicle, path):
     server = viser.ViserServer(host="127.0.0.1", port=0, verbose=False)
     try:
         server.scene.set_up_direction("+z")
-        server.initial_camera.position = (track.length, -track.width, max(track.length, track.width))
-        server.initial_camera.look_at = (0.0, 0.0, 0.0)
+        center = (np.array(track.origin) + np.array([track.length, track.width]) / 2
+                  if isinstance(track, MapTrack) else np.zeros(2))
+        server.initial_camera.position = (center[0]+track.length, center[1]-track.width, max(track.length, track.width))
+        server.initial_camera.look_at = (*center, 0.0)
         server.initial_camera.up = (0.0, 0.0, 1.0)
-        if isinstance(track, OvalTrack):
+        if isinstance(track, (OvalTrack, MapTrack)):
             for name, (vertices, faces) in track.mesh_parts().items():
                 server.scene.add_mesh_simple(f"/track/{name}", vertices=vertices, faces=faces,
                     color=(70, 75, 82) if name == "road" else (153, 153, 153), side="double")

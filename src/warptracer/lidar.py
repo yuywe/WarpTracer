@@ -10,6 +10,7 @@ import warp as wp
 from racesense3d import box, from_quads, lidar
 from racesense3d.core import Scene
 from .terrain import OvalTrack
+from .maps import MapTrack
 
 
 @dataclass(frozen=True)
@@ -95,10 +96,13 @@ class MountedLidar:
         self.mount_position = config.mount_position or (0.12, 0.0, vehicle.height / 2 + 0.025)
         self.mount = wp.transform(self.mount_position, wp.quat_rpy(*config.mount_rpy))
         if config.backend == "grid":
-            if not isinstance(track, OvalTrack):
-                raise ValueError("Grid LiDAR currently requires the oval track")
+            if not isinstance(track, (OvalTrack, MapTrack)):
+                raise ValueError("Grid LiDAR requires an oval or PNG track")
             from .distance_field import GridScene, DistanceField
-            self.scene = GridScene(DistanceField.oval(track, config.grid_cell_size), device=device)
+            field = track.distance_field() if isinstance(track, MapTrack) else DistanceField.oval(track, config.grid_cell_size)
+            self.scene = GridScene(field, device=device)
+        elif isinstance(track, MapTrack):
+            raise ValueError("PNG maps use grid LiDAR; choose backend='grid'")
         elif isinstance(track, OvalTrack):
             self.scene = Scene(*track.mesh(), device=device)
         else:
