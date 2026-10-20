@@ -6,14 +6,18 @@ import sys
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(description="Run a car replay, benchmark, or PPO training")
-    parser.add_argument("command", choices=("demo", "benchmark", "train", "evaluate", "map"))
+    parser.add_argument("command", choices=("demo", "benchmark", "train", "evaluate", "map", "view"))
     if not args:
         parser.print_help()
         return
-    if args[0] not in ("demo", "benchmark", "train", "evaluate", "map"):
+    if args[0] not in ("demo", "benchmark", "train", "evaluate", "map", "view"):
         parser.parse_args(args)
         return
     command, rest = args[0], args[1:]
+    if command == "view":
+        from .playback import main as view
+        view(rest)
+        return
     if command == "map":
         from .maps import main as inspect_map
         inspect_map(rest)

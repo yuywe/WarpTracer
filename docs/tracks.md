@@ -6,7 +6,8 @@ Run from the repository root:
 uv run warptracer demo oval
 ```
 
-Open **`outputs/oval.html`** for the replay. The 120-second run uses disparity
+Run `uv run warptracer view outputs/oval.npz` for native Warp playback.
+Add `--video` to the demo for an offscreen MP4 in Colab. The 120-second run uses disparity
 navigation, lean physics, 108-beam LiDAR at 60 Hz, and graph/fused execution.
 It chooses CUDA when available, otherwise CPU. The JSON reports lap progress
 and barrier-contact substeps; the NPZ retains poses, controls and scans.

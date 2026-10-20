@@ -370,7 +370,7 @@ def main(argv=None, *, default_preset=None):
         "minimum_warmup_wall_seconds": args.warmup_wall_seconds,
         "validation": validations,
         "warmup_chunk_transitions": transitions,
-        "timing_scope": "End-to-end Python submission, GPU waiting, stepping, sensors, and optional host recording; scan cases use fixed or identical prescribed moving poses without physics/controller; excludes setup, warmup, reset, validation, HTML and disk writes",
+        "timing_scope": "End-to-end Python submission, GPU waiting, stepping, sensors, and optional host recording; scan cases use fixed or identical prescribed moving poses without physics/controller; excludes setup, warmup, reset, validation, rendering and disk writes",
         "throughput_units": "environment transitions/s and physics substeps/s aggregate all cars; batch transitions/s counts runner advances",
         "final_state_scope": "All cars checked finite; final_pose/final_velocity contain car zero only",
         "results": [],

@@ -60,18 +60,21 @@ but exact stochastic continuation is only expected on the same device/runtime.
 Open [the PPO notebook](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/ppo_colab.ipynb)
 and select a GPU runtime. Run setup, then training with `preset = "oval"`.
 The notebook streams progress, evaluates the checkpoint, plots training history,
-and downloads a zip containing the checkpoint, logs and interactive HTML replay.
+and downloads a zip containing the checkpoint, logs, portable NPZ recording and Warp-rendered MP4.
 The `large` preset is optional after `oval` succeeds. No account or external
 logging service is required.
 
 Evaluation creates a separate one-car environment and uses deterministic actions
 (the tanh of the actor mean). It stops at the first lap, collision, stall or time
-limit. Open `outputs/ppo/evaluation.html`; `evaluation.json` reports return,
+limit. Use `uv run warptracer view outputs/ppo/evaluation.npz` for native playback;
+`evaluation.json` reports return,
 lap progress and the end reason. A single replay is a behavior check, not a
 multi-seed policy-quality result. Evaluation retains the terminal state instead
 of auto-resetting. The replay includes the initial pose, 30 Hz samples and the
 final pose/scan, including episodes that end on their first transition. You can
-orbit the camera, pause and scrub the recording; there is no live training viewer.
+move the camera, pause and seek the recording in the native viewer. Add `--video`
+to evaluation to export an MP4 for Colab. There is no live training viewer.
+Rendering is optional and happens after evaluation; [viewing details](playback.md).
 
 ## Environment contract
 

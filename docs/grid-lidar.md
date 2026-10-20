@@ -9,7 +9,8 @@ The existing mesh backend stays the default. Try the grid replay with:
 uv run warptracer demo oval-grid
 ```
 
-Open `outputs/oval-grid.html`. This runs the same 120-second oval navigation
+Run `uv run warptracer view outputs/oval-grid.npz` for native Warp playback,
+or add `--video` to the demo for Colab. This runs the same 120-second oval navigation
 task with 108 beams at 60 Hz. Vehicle physics and the displayed road remain the
 same; sensing uses a rasterized approximation of the track.
 

@@ -1,15 +1,39 @@
 # Validation
 
-Checked on 2026-10-18 UTC with Linux x86-64, Python 3.12.14, Newton 1.6.0,
-Warp 1.17.0, and Viser 1.0.26. SciPy is now an explicit dependency for EDT
+Checked on 2026-10-20 UTC with Linux x86-64, Python 3.12.14, Newton 1.6.0,
+Warp 1.17.0, Pyglet 2.1.19, and ImageIO/FFmpeg. SciPy is an explicit dependency for EDT
 preprocessing; PyTorch 2.8.0 is an optional `rl` dependency for training.
 
 ## Behavior and capture checks
 
-Full suite: **148 passed, 52 skipped** (CUDA unavailable), including optional
-PPO tests. Two additional PNG setup/swept-collision cases passed in the final
-focused map run (**13 passed, 3 CUDA skipped**).
+Full suite: **160 passed, 53 skipped** (CUDA unavailable), including optional
+PPO tests and Warp recording/playback checks.
 This includes the 40 Hz recording and disparity bug regression checks.
+
+## Warp playback replacement
+
+The active visualization path now uses Warp OpenGL; Viser and its browser/server
+dependency stack have been removed. Demos and evaluation save self-contained NPZ
+recordings without initializing graphics. Optional `--view` opens native playback;
+`--video` renders an MP4 offscreen. Both Colab notebooks use videos. Historical
+HTML measurements below describe the older implementation.
+
+CPU checks cover scene/scan round trips for room, oval and PNG maps, old demo
+sidecars, XYZW rotations, box half-extents, independent body/scan timestamps,
+invalid-return hiding, terminal-frame retention, and pause/seek/restart controls.
+An actual MP4 is encoded/decoded using a stub renderer to check frame ordering
+and terminal image content; cleanup after a pixel-read failure is checked.
+Import checks confirm recording/training do not import Pyglet, warp.render or
+Viser. CLI checks exercise both viewing/export dispatch paths without a context.
+All three notebooks pass schema validation and Python 3.10 syntax checks.
+
+A real offscreen attempt reached Warp OpenGL on the CPU-only host, but failed in
+Warp 1.17's GL-buffer fallback because pinned allocation still needs a CUDA
+driver. The application now reports this requirement before creating graphics
+and preserves recordings. Native CUDA/OpenGL output, camera interaction, EGL on
+Colab and rendering performance remain unverified here; the native GPU smoke test
+is included and skipped locally. Rendering and encoding remain outside simulation
+and PPO throughput measurements.
 
 ## PNG training maps
 
@@ -26,7 +50,7 @@ wall between free endpoints. Episode checks cover CPU eager/graph parity,
 continuous signed progress across the route wrap, lap termination, selective
 resets, and exact next-transition equality after restoring the route cursor.
 The CLI completes PPO smoke training, resumes after the source PNG/JSON are
-deleted, and exports an evaluation JSON/NPZ/HTML from embedded checkpoint geometry.
+deleted, and exports evaluation JSON/NPZ from embedded checkpoint geometry.
 
 The map preview was visually inspected. All source/notebook code parses with
 Python 3.10 syntax. Actual Colab uploads, native CUDA execution of the new map

@@ -139,6 +139,9 @@ def evaluate(argv=None):
     parser.add_argument("checkpoint", type=Path, nargs="?", default=Path("outputs/ppo/checkpoint.pt"))
     parser.add_argument("--device", default=None)
     parser.add_argument("--output", type=Path, default=Path("outputs/ppo/evaluation"))
+    display = parser.add_mutually_exclusive_group()
+    display.add_argument("--view", action="store_true", help="Open the recording in Warp's native viewer")
+    display.add_argument("--video", action="store_true", help="Render a Warp MP4 after evaluation (Colab/offscreen)")
     args = parser.parse_args(argv)
     state = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     if state.get("format_version") != 1:
@@ -193,12 +196,18 @@ def evaluate(argv=None):
     if poses:
         from .simulation import Trajectory
         from .lidar import LidarRecording
-        from .playback import save_html
+        from .playback import save_recording
         scans = LidarRecording(np.array(times), np.array(lidar_poses), np.array(ranges), np.array(masks), env.sim.lidar.rays.directions)
         trajectory = Trajectory(np.array(times), np.array(poses), np.array(velocities), metrics, np.array(controls), scans)
-        np.savez_compressed(args.output.with_suffix(".npz"), times=trajectory.times, poses=trajectory.poses,
-                            velocities=trajectory.velocities, actions=trajectory.actions,
-                            lidar_poses=scans.poses, lidar_ranges=scans.ranges, lidar_valid=scans.valid)
-        save_html(trajectory, env.track, env.sim.vehicle, args.output.with_suffix(".html"))
-        print(f"Replay: {args.output.with_suffix('.html')}", flush=True)
+        recording = save_recording(trajectory, env.track, env.sim.vehicle, args.output)
+        print(f"Recording: {recording}; view with: uv run warptracer view {recording}", flush=True)
     print(json.dumps(metrics, indent=2), flush=True)
+    if poses and (args.view or args.video):
+        from .playback import play
+        try:
+            path = play(trajectory, env.track, env.sim.vehicle,
+                        video=args.output.with_suffix(".mp4") if args.video else None, device=env.device)
+        except (RuntimeError, OSError) as error:
+            parser.error(f"Evaluation and recording saved. {error}")
+        if path:
+            print(f"Warp video: {path}", flush=True)

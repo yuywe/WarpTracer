@@ -7,8 +7,8 @@ uv run warptracer demo
 ```
 
 This runs 30 simulated seconds with 108 beams at 60 Hz, using CUDA when available
-and otherwise CPU. Open `outputs/disparity.html` for an interactive
-replay. The NPZ retains poses, applied controls and scans; the JSON records
+and otherwise CPU. Run `uv run warptracer view outputs/disparity.npz` for native Warp
+playback on your GPU machine, or add `--video` to the demo for Colab. The NPZ retains poses, applied controls and scans; the JSON records
 controller settings and `wall_contact_substeps`. This counter counts every
 physics substep touching a wall, including contacts inside a fused transition.
 It is not a count of distinct crashes. Newton currently reports no such counter.

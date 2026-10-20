@@ -13,13 +13,14 @@ dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
     "warp-lang==1.17.0",
-    "viser==1.0.26",
+    "pyglet>=2.0,<3",
+    "imageio>=2.34",
+    "imageio-ffmpeg>=0.5",
     "pillow>=10",
     "scikit-image>=0.24",
 ]
 
 [project.optional-dependencies]
-viz = ["viser==1.0.26"]
 dev = ["pytest>=8"]
 rl = ["torch==2.8.0"]
 

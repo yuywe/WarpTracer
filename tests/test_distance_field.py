@@ -203,7 +203,7 @@ def test_short_grid_commands_report_sensor_geometry_and_real_work(tmp_path):
     assert metadata["lidar"]["backend"] == "grid"
     assert metadata["lidar"]["grid_cell_size"] == .025
     assert metadata["lidar"]["algorithm"] == "edt-sphere-tracing"
-    assert (tmp_path / "oval-grid.html").stat().st_size > 1000
+    assert (tmp_path / "oval-grid.npz").stat().st_size > 1000
     output = tmp_path / "grid.json"
     main(["benchmark", "grid", "--device", "cpu", "--envs", "1", "--seconds", ".1",
           "--trials", "1", "--warmup-seconds", ".1", "--warmup-wall-seconds", "0", "--output", str(output)])

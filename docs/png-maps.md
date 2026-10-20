@@ -24,7 +24,7 @@ Train with the usual preset and one map option:
 
 ```bash
 uv run --extra rl warptracer train oval --map maps/my-track.png
-uv run --extra rl warptracer evaluate
+uv run --extra rl warptracer evaluate --view
 ```
 
 Here `oval` selects the existing 1,024-car **training settings**; `--map` replaces
@@ -92,7 +92,7 @@ diagrams should first be converted into an occupancy mask.
 - PNGs are limited to four million pixels. Resolution controls physical scale,
   not resampling: resizing the image requires updating meters per pixel. Coarse
   cells produce coarser LiDAR surfaces and more conservative collisions.
-- Interactive evaluation includes a flat road and extruded wall outlines derived
+- Warp playback includes a flat road and extruded wall outlines derived
   from the sensor field. Rendering meshes are created only for replay.
 - This adds occupancy maps, not height-map import, SLAM, bridges, map randomization
   or interacting cars. GPU throughput and learning on a new map still need testing

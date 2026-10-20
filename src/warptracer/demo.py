@@ -31,8 +31,13 @@ def main(argv=None):
     parser.add_argument("--lidar-hz", type=int, default=60, help="Scan rate (default: 60), must divide physics Hz")
     parser.add_argument("--lidar-backend", choices=("mesh", "grid"), default=None, help="oval-grid selects grid; other demos select mesh")
     parser.add_argument("--headless", action="store_true", help="Skip replay and intermediate CPU copies")
+    display = parser.add_mutually_exclusive_group()
+    display.add_argument("--view", action="store_true", help="Open the recorded run in Warp's native viewer")
+    display.add_argument("--video", action="store_true", help="Render an MP4 with Warp (Colab/offscreen)")
     parser.add_argument("--output", type=Path, default=Path("outputs"))
     args = parser.parse_args(argv)
+    if args.headless and (args.view or args.video):
+        parser.error("--headless skips recording; omit it when using --view or --video")
     if args.scenario_name is not None and args.scenario is not None:
         parser.error("Choose a positional scenario or --scenario, not both")
     args.scenario = args.scenario or args.scenario_name or "disparity"
@@ -71,18 +76,11 @@ def main(argv=None):
             trajectory.metadata["completed_laps"] = int(progress)
     args.output.mkdir(parents=True, exist_ok=True)
     stem = args.output / (args.scenario + ("_headless" if args.headless else ""))
-    arrays = dict(times=trajectory.times, poses=trajectory.poses,
-                  velocities=trajectory.velocities, actions=trajectory.actions)
-    if trajectory.lidar is not None:
-        scans = trajectory.lidar
-        arrays.update(lidar_times=scans.times, lidar_poses=scans.poses, lidar_ranges=scans.ranges,
-                      lidar_valid=scans.valid, lidar_directions=scans.directions)
-    np.savez_compressed(stem.with_suffix(".npz"), **arrays)
+    from .playback import save_recording
+    recording = save_recording(trajectory, sim.track, sim.vehicle, stem)
     stem.with_suffix(".json").write_text(json.dumps(trajectory.metadata, indent=2) + "\n")
     if not args.headless:
-        from .playback import save_html
-        path = save_html(trajectory, sim.track, sim.vehicle, stem.with_suffix(".html"))
-        print(f"Interactive replay: {path}")
+        print(f"Recording: {recording}; view with: uv run warptracer view {recording}")
     print(f"{trajectory.metadata['simulated_seconds']:.2f} simulated seconds; "
           f"{trajectory.metadata['elapsed_seconds']:.3f} s elapsed; "
           f"{trajectory.metadata['steps_per_second']:.0f} physics steps/s on {sim.model.device}.")
@@ -101,6 +99,15 @@ def main(argv=None):
         print(f"Physics: {sim.engine}; one box chassis, one floor, four walls.")
     if runner is not None and physics == "lean":
         print(f"Wall-contact substeps: {trajectory.metadata['wall_contact_substeps']}")
+    if args.view or args.video:
+        from .playback import play
+        try:
+            path = play(trajectory, sim.track, sim.vehicle, video=stem.with_suffix(".mp4") if args.video else None,
+                        device=sim.model.device)
+        except (RuntimeError, OSError) as error:
+            parser.error(f"Recording saved to {recording}. {error}")
+        if path:
+            print(f"Warp video: {path}")
 
 
 if __name__ == "__main__":

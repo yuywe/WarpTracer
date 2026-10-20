@@ -264,4 +264,6 @@ def test_map_ppo_checkpoint_resume_and_evaluate_without_source_png(png_map, tmp_
     evaluate([str(output / "checkpoint.pt"), "--device", "cpu", "--output", str(output / "evaluation")])
     metrics = json.loads((output / "evaluation.json").read_text())
     assert metrics["map"] == "circuit" and metrics["transitions"] == 1
-    assert (output / "evaluation.html").stat().st_size > 1000
+    from warptracer.playback import load_recording
+    recording, track, vehicle = load_recording(output / "evaluation.npz")
+    assert track.name == "circuit" and recording.lidar.directions.shape == (108, 3)
