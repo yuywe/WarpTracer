@@ -76,12 +76,12 @@ def test_frame_uses_xyzw_half_extents_fresh_scan_and_hides_invalid_returns():
     renderer = Renderer(); data = recording()
     playback._draw_frame(renderer, data, Vehicle(), .1)
     args, _ = renderer.boxes[-1]
-    np.testing.assert_allclose(args[1], data.poses[-1, :3])
-    np.testing.assert_allclose(args[2], data.poses[-1, 3:])
-    np.testing.assert_allclose(args[3], np.array(Vehicle().dimensions)/2)
-    np.testing.assert_allclose(renderer.points[-1][0], data.lidar.points(1)[0], atol=1e-6)
-    assert renderer.points[-1][1, 2] < -1.e9
-    assert (renderer.lines[-1][2:, 2] < -1.e9).all()
+    np.testing.assert_allclose(args[1], playback._to_gl(data.poses[-1, :3]))
+    np.testing.assert_allclose(args[2], playback._quat_to_gl(data.poses[-1, 3:]))
+    np.testing.assert_allclose(args[3], playback._extent_to_gl(np.array(Vehicle().dimensions)/2))
+    np.testing.assert_allclose(renderer.points[-1][0], playback._to_gl(data.lidar.points(1)[0]), atol=1e-6)
+    assert (np.abs(renderer.points[-1][1]) > 1.e9).any()
+    assert (np.abs(renderer.lines[-1][2:]) > 1.e9).any(axis=1).all()
 
 
 def test_video_encodes_first_and_terminal_frames_and_closes_renderer(tmp_path, monkeypatch):

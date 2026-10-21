@@ -7,10 +7,32 @@ import sys
 import time
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from .maps import MapTrack, restore_track, track_state
 from .scene import Track, Vehicle
 from .terrain import OvalTrack
+
+# WarpTracer's world is Z-up (X forward, Y left); the installed Warp 1.17 OpenGL
+# renderer's up_axis="Z" mode disagrees with itself (its camera and its shape
+# instances resolve the axis permutation differently, landing arbitrary rotated
+# objects in the wrong place). Side-step that entirely: render in the renderer's
+# native up_axis="Y" and convert every position/rotation/extent we hand it
+# through this one fixed, verified change of basis.
+_WORLD_TO_RENDERER = Rotation.from_euler("x", -90, degrees=True)
+
+
+def _to_gl(points):
+    return _WORLD_TO_RENDERER.apply(points)
+
+
+def _extent_to_gl(extent):
+    ex, ey, ez = extent
+    return (ex, ez, ey)
+
+
+def _quat_to_gl(quat):
+    return tuple((_WORLD_TO_RENDERER * Rotation.from_quat(quat) * _WORLD_TO_RENDERER.inv()).as_quat())
 
 
 def save_recording(trajectory, track, vehicle, path):
@@ -95,9 +117,9 @@ def _make_renderer(track, *, headless, fps, width, height, device):
     direction = np.array([*center, .15]) - position
     direction /= np.linalg.norm(direction)
     try:
-        renderer = wp.render.OpenGLRenderer(title="WarpTracer", up_axis="Z", fps=fps,
+        renderer = wp.render.OpenGLRenderer(title="WarpTracer", up_axis="Y", fps=fps,
             screen_width=width, screen_height=height, near_plane=.01, far_plane=10*span,
-            camera_pos=tuple(position), camera_front=tuple(direction), camera_up=(0., 0., 1.),
+            camera_pos=tuple(_to_gl(position)), camera_front=tuple(_to_gl(direction)), camera_up=tuple(_to_gl((0., 0., 1.))),
             draw_grid=False, draw_sky=False, draw_axis=False, show_info=False,
             enable_backface_culling=False, background_color=(.08, .10, .13),
             headless=headless, device=device)
@@ -110,17 +132,18 @@ def _make_renderer(track, *, headless, fps, width, height, device):
 
 
 def _draw_track(renderer, track):
-    identity = (0., 0., 0., 1.)
+    identity = _quat_to_gl((0., 0., 0., 1.))
     if isinstance(track, (OvalTrack, MapTrack)):
         for name, (vertices, faces) in track.mesh_parts().items():
             color = (.28, .30, .33) if name == "road" else (.60, .60, .60)
-            renderer.render_mesh(f"track/{name}", vertices, faces, colors=color, smooth_shading=False)
+            renderer.render_mesh(f"track/{name}", _to_gl(vertices), faces, colors=color, smooth_shading=False)
     else:
-        renderer.render_box("floor", (0, 0, -.03), identity,
-                            ((track.length+2*track.barrier_thickness)/2,
-                             (track.width+2*track.barrier_thickness)/2, .03), color=(.28, .30, .33))
+        renderer.render_box("floor", tuple(_to_gl((0, 0, -.03))), identity,
+                            _extent_to_gl(((track.length+2*track.barrier_thickness)/2,
+                             (track.width+2*track.barrier_thickness)/2, .03)), color=(.28, .30, .33))
         for i, (position, dimensions) in enumerate(track.barriers()):
-            renderer.render_box(f"walls/{i}", position, identity, tuple(np.array(dimensions)/2), color=(.6, .6, .6))
+            renderer.render_box(f"walls/{i}", tuple(_to_gl(position)), identity,
+                                _extent_to_gl(tuple(np.array(dimensions)/2)), color=(.6, .6, .6))
 
 
 def _sample_index(times, timestamp):
@@ -130,8 +153,8 @@ def _sample_index(times, timestamp):
 def _draw_frame(renderer, trajectory, vehicle, timestamp):
     renderer.begin_frame(timestamp)
     pose = trajectory.poses[_sample_index(trajectory.times, timestamp)]
-    renderer.render_box("vehicle", tuple(pose[:3]), tuple(pose[3:]),
-                        tuple(np.array(vehicle.dimensions)/2), color=(.12, .49, .93))
+    renderer.render_box("vehicle", tuple(_to_gl(pose[:3])), _quat_to_gl(pose[3:]),
+                        _extent_to_gl(tuple(np.array(vehicle.dimensions)/2)), color=(.12, .49, .93))
     scans = trajectory.lidar
     if scans is not None:
         index = _sample_index(scans.times, timestamp)
@@ -141,13 +164,13 @@ def _draw_frame(renderer, trajectory, vehicle, timestamp):
         # Warp retains point/line instancers when passed an empty collection.
         # Keep counts stable and move invalid samples outside the clipping range.
         points[missing] = (0., 0., -1.e10)
-        displayed = points[::max(1, (len(points)+179)//180)].astype(np.float32)
+        displayed = _to_gl(points[::max(1, (len(points)+179)//180)]).astype(np.float32)
         renderer.render_points("lidar/returns", displayed, radius=.018, colors=(1., .82, .27))
         ends = points[::max(1, (len(points)+29)//30)]
         origins = np.broadcast_to(origin, ends.shape).copy()
         origins[missing[::max(1, (len(points)+29)//30)]] = (0., 0., -1.e10)
-        lines = np.stack((origins, ends), axis=1).astype(np.float32)
-        renderer.render_line_list("lidar/rays", lines.reshape(-1, 3), np.arange(lines.size//3),
+        lines = _to_gl(np.stack((origins, ends), axis=1).reshape(-1, 3)).astype(np.float32)
+        renderer.render_line_list("lidar/rays", lines, np.arange(len(lines)),
                                  color=(.24, .70, .51), radius=.006)
     renderer.end_frame()
 
