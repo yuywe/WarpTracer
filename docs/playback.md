@@ -11,7 +11,7 @@ uv run warptracer demo oval-grid --view
 ```
 
 The demo simulates, saves `outputs/oval-grid.npz`, then opens a native window.
-For a trained policy, use `uv run --extra rl warptracer evaluate --view`.
+For a trained policy, use `uv run warptracer evaluate --view`.
 To reopen any recording:
 
 ```bash
@@ -29,7 +29,7 @@ The driving and PPO notebooks request video automatically. The equivalent comman
 
 ```bash
 uv run warptracer demo oval-grid --video
-uv run --extra rl warptracer evaluate --video
+uv run warptracer evaluate --video
 ```
 
 These use Warp to render offscreen, then encode `outputs/oval-grid.mp4` or

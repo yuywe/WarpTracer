@@ -131,7 +131,7 @@ def main(argv=None):
     except KeyboardInterrupt:
         print(f"Interrupted; checkpoint at {checkpoint} contains saved update {last_saved_iteration}", flush=True)
         return
-    print(f"Saved {checkpoint}; evaluate with: uv run --extra rl warptracer evaluate {checkpoint}", flush=True)
+    print(f"Saved {checkpoint}; evaluate with: uv run warptracer evaluate {checkpoint}", flush=True)
 
 
 def evaluate(argv=None):

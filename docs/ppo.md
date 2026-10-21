@@ -7,17 +7,20 @@ lean physics, uncached EDT sensing and 60 Hz control (four 240 Hz substeps).
 ## Run it
 
 ```bash
-uv run --extra rl warptracer train smoke
-uv run --extra rl warptracer train oval
-uv run --extra rl warptracer evaluate
+uv run warptracer train smoke
+uv run warptracer train oval
+uv run warptracer evaluate
 ```
 
 The smoke preset uses CPU and checks the complete training/checkpoint path. It
 is too short to learn to race. `oval` requires CUDA and uses 1,024 cars; `large`
 uses 4,096. Start with `oval`: higher simulator throughput does not establish
-which batch size trains best. PyTorch 2.8 is installed only with the `rl` extra;
-existing demos and benchmarks do not need it. Its CUDA dependencies require
-several GB of disk space on Linux.
+which batch size trains best. PyTorch 2.8 is a base dependency, so every
+environment installs it (several GB, mostly bundled CUDA libraries) even if you
+only use the demos or benchmarks. Linux's default PyPI wheel is already
+CUDA-enabled; Windows resolves a CUDA build from a separate PyTorch wheel index
+configured in `pyproject.toml`'s `[tool.uv.sources]`; macOS installs the CPU/MPS
+build.
 
 To choose a PNG, prepare its scale once, then add `--map maps/my-track.png` to
 the training command. The preset still controls the training budget and car count.
@@ -47,7 +50,7 @@ log records and records newer than that checkpoint. Resume adds updates to its
 saved configuration:
 
 ```bash
-uv run --extra rl warptracer train oval --resume outputs/ppo/checkpoint.pt
+uv run warptracer train oval --resume outputs/ppo/checkpoint.pt
 ```
 
 `--updates`, `--envs`, `--seed` and `--output` are optional overrides, not required

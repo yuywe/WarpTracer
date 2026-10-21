@@ -18,11 +18,11 @@ dependencies = [
     "imageio-ffmpeg>=0.5",
     "pillow>=10",
     "scikit-image>=0.24",
+    "torch==2.8.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
-rl = ["torch==2.8.0"]
 
 [project.scripts]
 warptracer = "warptracer.cli:main"
@@ -33,3 +33,15 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# PyPI's default torch wheel is CUDA-enabled on Linux but CPU-only on Windows.
+# Route Windows at PyTorch's own CUDA 12.8 wheel index instead; Linux/macOS keep PyPI.
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

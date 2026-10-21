@@ -29,10 +29,5 @@ def main(argv=None):
         from .benchmark import main as run_benchmark
         run_benchmark(rest, default_preset="quick")
     else:
-        try:
-            from .train import main as train, evaluate
-        except ModuleNotFoundError as error:
-            if error.name != "torch":
-                raise
-            parser.error("PPO requires the rl extra: uv run --extra rl warptracer " + command)
+        from .train import main as train, evaluate
         (train if command == "train" else evaluate)(rest)

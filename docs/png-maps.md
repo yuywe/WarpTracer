@@ -23,8 +23,8 @@ junction or multiple loops needs an explicit route (below).
 Train with the usual preset and one map option:
 
 ```bash
-uv run --extra rl warptracer train oval --map maps/my-track.png
-uv run --extra rl warptracer evaluate --view
+uv run warptracer train oval --map maps/my-track.png
+uv run warptracer evaluate --view
 ```
 
 Here `oval` selects the existing 1,024-car **training settings**; `--map` replaces

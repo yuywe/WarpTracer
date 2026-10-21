@@ -53,10 +53,10 @@ For Colab, use `--video` to export an MP4. [Viewing and video details](docs/play
 | Large batches and moving LiDAR (up to 4,096 cars) | `uv run warptracer benchmark scale` | `outputs/scale.json` |
 | Independent car scaling | `uv run warptracer benchmark batches` | `outputs/batches.json` |
 | Fused vs. unfused physics | `uv run warptracer benchmark fusion` | `outputs/fusion.json` |
-| PPO training on the oval (1,024 cars, CUDA) | `uv run --extra rl warptracer train oval` | `outputs/ppo/checkpoint.pt` |
+| PPO training on the oval (1,024 cars, CUDA) | `uv run warptracer train oval` | `outputs/ppo/checkpoint.pt` |
 | Prepare a PNG map once (set its meters/pixel) | `uv run warptracer map maps/my-track.png --resolution 0.05` | `outputs/maps/my-track.png` |
-| PPO on your PNG map | `uv run --extra rl warptracer train oval --map maps/my-track.png` | `outputs/ppo/checkpoint.pt` |
-| Evaluate and view a trained policy | `uv run --extra rl warptracer evaluate --view` | `outputs/ppo/evaluation.npz` |
+| PPO on your PNG map | `uv run warptracer train oval --map maps/my-track.png` | `outputs/ppo/checkpoint.pt` |
+| Evaluate and view a trained policy | `uv run warptracer evaluate --view` | `outputs/ppo/evaluation.npz` |
 | Render an MP4 for Colab | `uv run warptracer demo oval-grid --video` | `outputs/oval-grid.mp4` |
 
 The `scale`, `grid`, `oval`, `navigation`, `batches` and `fusion` presets require CUDA by default.
@@ -108,5 +108,4 @@ cell. No command construction or physics settings need editing for normal runs.
 - [Vehicle, LiDAR, controls, and saved arrays](docs/reference.md)
 - [Validation results and model limits](VALIDATION.md)
 
-Run tests with `uv run --extra dev pytest -q`.
-Include PPO tests with `uv run --extra dev --extra rl pytest -q`.
+Run tests, including PPO, with `uv run --extra dev pytest -q`.
