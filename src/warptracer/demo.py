@@ -34,6 +34,9 @@ def main(argv=None):
     display = parser.add_mutually_exclusive_group()
     display.add_argument("--view", action="store_true", help="Open the recorded run in Warp's native viewer")
     display.add_argument("--video", action="store_true", help="Render an MP4 with Warp (Colab/offscreen)")
+    parser.add_argument("--follow", nargs="?", const=20.0, type=float, default=None,
+                        help="Top-down camera tracking the car instead of a fixed wide shot; "
+                             "optional meters of altitude (default 20); useful on large tracks")
     parser.add_argument("--output", type=Path, default=Path("outputs"))
     args = parser.parse_args(argv)
     if args.headless and (args.view or args.video):
@@ -103,7 +106,7 @@ def main(argv=None):
         from .playback import play
         try:
             path = play(trajectory, sim.track, sim.vehicle, video=stem.with_suffix(".mp4") if args.video else None,
-                        device=sim.model.device)
+                        device=sim.model.device, follow_height=args.follow)
         except (RuntimeError, OSError) as error:
             parser.error(f"Recording saved to {recording}. {error}")
         if path:

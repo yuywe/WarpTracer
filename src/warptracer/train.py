@@ -142,6 +142,9 @@ def evaluate(argv=None):
     display = parser.add_mutually_exclusive_group()
     display.add_argument("--view", action="store_true", help="Open the recording in Warp's native viewer")
     display.add_argument("--video", action="store_true", help="Render a Warp MP4 after evaluation (Colab/offscreen)")
+    parser.add_argument("--follow", nargs="?", const=20.0, type=float, default=None,
+                        help="Top-down camera tracking the car instead of a fixed wide shot; "
+                             "optional meters of altitude (default 20); useful on large tracks")
     args = parser.parse_args(argv)
     state = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     if state.get("format_version") != 1:
@@ -206,7 +209,8 @@ def evaluate(argv=None):
         from .playback import play
         try:
             path = play(trajectory, env.track, env.sim.vehicle,
-                        video=args.output.with_suffix(".mp4") if args.video else None, device=env.device)
+                        video=args.output.with_suffix(".mp4") if args.video else None, device=env.device,
+                        follow_height=args.follow)
         except (RuntimeError, OSError) as error:
             parser.error(f"Evaluation and recording saved. {error}")
         if path:

@@ -10,50 +10,111 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw
-from scipy.ndimage import distance_transform_edt, gaussian_filter1d
+from scipy.ndimage import convolve, distance_transform_edt, gaussian_filter1d, label
 from skimage.morphology import skeletonize
 
 from .distance_field import DistanceField
 from .terrain import OvalTrack
 
+_ROUTE_ERROR = ("Cannot infer one closed route from this PNG. Use a single closed track, "
+                "or set centerline to an ordered x,y CSV in the map JSON")
+# A found loop rarely covers every skeleton pixel (a little noise is normal
+# even on a clean track); below this fraction, treat it as a genuinely
+# ambiguous/branching layout rather than route noise.
+_MIN_LOOP_COVERAGE = 0.9
+
+
+def _prune_skeleton_spurs(skeleton):
+    """Erode dead-end skeleton pixels until none remain.
+
+    Real-world track PNGs rarely skeletonize to a perfect single-pixel ring:
+    a slightly uneven edge (often right at the start/finish line) leaves a
+    short dangling branch. Shaving pixels with at most one neighbor, repeated
+    until stable, removes those branches without touching the ring itself,
+    since every ring pixel always keeps two neighbors.
+    """
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    kernel[1, 1] = 0
+    skeleton = skeleton.copy()
+    while True:
+        counts = convolve(skeleton.astype(np.uint8), kernel, mode="constant", cval=0)
+        endpoints = skeleton & (counts <= 1)
+        if not endpoints.any():
+            return skeleton
+        skeleton &= ~endpoints
+
+
+def _skeleton_neighbors(pixels, x, y):
+    adjacent = set()
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            q = x + dx, y + dy
+            # Do not add a diagonal shortcut around a connected right angle.
+            if (dx or dy) and q in pixels and not (dx and dy and
+                    ((x + dx, y) in pixels or (x, y + dy) in pixels)):
+                adjacent.add(q)
+    return adjacent
+
+
+def _longest_loop_through(pixels, start):
+    """Longest simple path from start, through two of its neighbors, and back.
+
+    Unlike a single fixed-direction walk, this tolerates leftover junctions
+    elsewhere in the skeleton (e.g. a short spur too tangled for pruning to
+    remove outright): it searches every pair of the start's own neighbors and
+    keeps the longest connecting path, rather than failing the moment any
+    pixel in the whole skeleton has more than two neighbors.
+    """
+    neighbors = sorted(_skeleton_neighbors(pixels, *start))
+    best = None
+    for i in range(len(neighbors)):
+        for j in range(i + 1, len(neighbors)):
+            source, target = neighbors[i], neighbors[j]
+            parent = {source: source}
+            queue = deque([source])
+            while queue:
+                current = queue.popleft()
+                if current == target:
+                    break
+                for neighbor in _skeleton_neighbors(pixels, *current):
+                    if neighbor in parent or neighbor == start:
+                        continue
+                    parent[neighbor] = current
+                    queue.append(neighbor)
+            if target not in parent:
+                continue
+            path, node = [start], target
+            while node != source:
+                path.append(node)
+                node = parent[node]
+            path.append(source)
+            if best is None or len(path) > len(best):
+                best = path
+    return best
+
 
 def _automatic_route(free):
-    pixels = {tuple(p) for p in np.argwhere(skeletonize(free))}
-    graph = {}
-    for x, y in sorted(pixels):
-        adjacent = set()
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                q = x + dx, y + dy
-                # Do not add a diagonal shortcut around a connected right angle.
-                if (dx or dy) and q in pixels and not (dx and dy and
-                        ((x + dx, y) in pixels or (x, y + dy) in pixels)):
-                    adjacent.add(q)
-        graph[x, y] = adjacent
-    leaves = deque(p for p in graph if len(graph[p]) < 2)
-    while leaves:
-        p = leaves.popleft()
-        if p not in graph:
-            continue
-        for q in graph.pop(p):
-            graph[q].discard(p)
-            if len(graph[q]) < 2:
-                leaves.append(q)
-    message = ("Cannot infer one closed route from this PNG. Use a single closed track, "
-               "or set centerline to an ordered x,y CSV in the map JSON")
-    if len(graph) < 8 or any(len(v) != 2 for v in graph.values()):
-        raise ValueError(message)
-    start = min(graph)
-    ordered, previous, current = [], None, start
-    while current != start or not ordered:
-        ordered.append(current)
-        candidates = sorted(graph[current] - {previous})
-        previous, current = current, candidates[0]
-        if len(ordered) > len(graph):
-            raise ValueError(message)
-    if len(ordered) != len(graph):
-        raise ValueError(message + " (multiple disconnected loops found)")
-    return gaussian_filter1d(np.array(ordered, dtype=float), 1.5, axis=0, mode="wrap")
+    skeleton = _prune_skeleton_spurs(skeletonize(free))
+    labels, components = label(skeleton, structure=np.ones((3, 3), dtype=int))
+    if components == 0:
+        raise ValueError(_ROUTE_ERROR)
+    sizes = np.bincount(labels.ravel())
+    sizes[0] = 0
+    pixels = {tuple(p) for p in np.argwhere(labels == int(np.argmax(sizes)))}
+    if len(pixels) < 8:
+        raise ValueError(_ROUTE_ERROR)
+    # Only junctions (more than two neighbors) can make a walk choose wrong;
+    # try those first, padded with other pixels for extra search diversity.
+    junctions = sorted(p for p in pixels if len(_skeleton_neighbors(pixels, *p)) > 2)
+    candidates = (junctions + [p for p in sorted(pixels) if p not in junctions])[:32]
+    best = None
+    for start in candidates:
+        loop = _longest_loop_through(pixels, start)
+        if loop is not None and (best is None or len(loop) > len(best)):
+            best = loop
+    if best is None or len(best) < _MIN_LOOP_COVERAGE * len(pixels):
+        raise ValueError(_ROUTE_ERROR + (" (multiple disconnected loops found)" if best else ""))
+    return gaussian_filter1d(np.array(best, dtype=float), 1.5, axis=0, mode="wrap")
 
 
 def _resample(points, spacing=.1):

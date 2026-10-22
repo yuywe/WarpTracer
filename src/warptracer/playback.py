@@ -99,7 +99,7 @@ def _validate(trajectory):
             raise ValueError("Recording LiDAR times, poses, directions and scan shapes do not match")
 
 
-def _make_renderer(track, *, headless, fps, width, height, device):
+def _make_renderer(track, *, headless, fps, width, height, device, follow_height=None):
     import warp as wp
     wp.init()
     if not wp.is_cuda_available():
@@ -116,9 +116,12 @@ def _make_renderer(track, *, headless, fps, width, height, device):
     position = np.array([center[0]+.8*span, center[1]-.9*span, .95*span])
     direction = np.array([*center, .15]) - position
     direction /= np.linalg.norm(direction)
+    # A far plane sized to the whole track wastes depth-buffer precision for a
+    # close-up follow camera, causing z-fighting on nearly coplanar geometry.
+    far_plane = max(10 * follow_height, 50) if follow_height is not None else 10 * span
     try:
         renderer = wp.render.OpenGLRenderer(title="WarpTracer", up_axis="Y", fps=fps,
-            screen_width=width, screen_height=height, near_plane=.01, far_plane=10*span,
+            screen_width=width, screen_height=height, near_plane=.01, far_plane=far_plane,
             camera_pos=tuple(_to_gl(position)), camera_front=tuple(_to_gl(direction)), camera_up=tuple(_to_gl((0., 0., 1.))),
             draw_grid=False, draw_sky=False, draw_axis=False, show_info=False,
             enable_backface_culling=False, background_color=(.08, .10, .13),
@@ -150,9 +153,37 @@ def _sample_index(times, timestamp):
     return int(np.clip(np.searchsorted(times, timestamp, side="right")-1, 0, len(times)-1))
 
 
-def _draw_frame(renderer, trajectory, vehicle, timestamp):
-    renderer.begin_frame(timestamp)
+def _top_down_camera(pose, height):
+    """Near-overhead camera above and beside the car, looking mostly down.
+
+    A literal straight-down view aliases badly here: the renderer's thin
+    extruded wall quads are viewed exactly edge-on, and that degeneracy
+    persists regardless of altitude, wall mesh density, or depth-buffer
+    range -- confirmed empirically, not tunable away. A fixed shallow
+    elevation angle (verified clean down to ~20 degrees above horizontal)
+    keeps the view close to overhead while avoiding it.
+    ELEVATION_DEG below is that angle, measured up from the horizon.
+    The on-screen orientation is fixed to world X/Y rather than the car's
+    heading, so it reads like a stable map instead of spinning every corner.
+    """
+    elevation = np.radians(20.0)
+    offset = height / np.tan(elevation)
+    position = np.array([pose[0] - offset, pose[1], pose[2] + height])
+    front = np.array([pose[0], pose[1], pose[2]]) - position
+    front /= np.linalg.norm(front)
+    up = np.array([0., 0., 1.])
+    up = up - front * np.dot(up, front)
+    up /= np.linalg.norm(up)
+    return position, front, up
+
+
+def _draw_frame(renderer, trajectory, vehicle, timestamp, follow_height=None):
     pose = trajectory.poses[_sample_index(trajectory.times, timestamp)]
+    if follow_height is not None:
+        position, front, up = _top_down_camera(pose, follow_height)
+        renderer.update_view_matrix(cam_pos=tuple(_to_gl(position)), cam_front=tuple(_to_gl(front)),
+                                    cam_up=tuple(_to_gl(up)))
+    renderer.begin_frame(timestamp)
     renderer.render_box("vehicle", tuple(_to_gl(pose[:3])), _quat_to_gl(pose[3:]),
                         _extent_to_gl(tuple(np.array(vehicle.dimensions)/2)), color=(.12, .49, .93))
     scans = trajectory.lidar
@@ -175,14 +206,23 @@ def _draw_frame(renderer, trajectory, vehicle, timestamp):
     renderer.end_frame()
 
 
-def play(trajectory, track, vehicle, *, video=None, fps=30, width=960, height=640, device=None):
-    """Open a native replay, or render a fixed-camera MP4 offscreen."""
+def play(trajectory, track, vehicle, *, video=None, fps=30, width=960, height=640, device=None, follow_height=None):
+    """Open a native replay, or render an MP4 offscreen.
+
+    By default the camera is a fixed wide shot sized to the whole track.
+    Pass follow_height (meters of altitude) for a top-down camera that
+    tracks the car instead -- useful once a track is much larger than the
+    car, where the car is otherwise sub-pixel in the fixed wide shot.
+    """
     _validate(trajectory)
     if type(fps) is not int or fps <= 0 or min(width, height) < 16 or width % 2 or height % 2:
         raise ValueError("Require positive integer FPS and even video dimensions >= 16")
     if video is not None and Path(video).suffix.lower() != ".mp4":
         raise ValueError("Video output must have the .mp4 extension")
-    renderer = _make_renderer(track, headless=video is not None, fps=fps, width=width, height=height, device=device)
+    if follow_height is not None and (not np.isfinite(follow_height) or follow_height <= 0):
+        raise ValueError("follow_height must be finite and positive")
+    renderer = _make_renderer(track, headless=video is not None, fps=fps, width=width, height=height, device=device,
+                              follow_height=follow_height)
     try:
         _draw_track(renderer, track)
         start, end = float(trajectory.times[0]), float(trajectory.times[-1])
@@ -195,7 +235,7 @@ def play(trajectory, track, vehicle, *, video=None, fps=30, width=960, height=64
             count = int(np.ceil((end-start)*fps)) + 1
             with imageio.get_writer(path, fps=fps, codec="libx264", pixelformat="yuv420p", macro_block_size=None) as writer:
                 for frame in range(count):
-                    _draw_frame(renderer, trajectory, vehicle, min(start+frame/fps, end))
+                    _draw_frame(renderer, trajectory, vehicle, min(start+frame/fps, end), follow_height)
                     if not renderer.get_pixels(pixels, split_up_tiles=False, use_uint8=True):
                         raise RuntimeError("Warp could not read the rendered frame")
                     writer.append_data(pixels.numpy())
@@ -220,7 +260,7 @@ def play(trajectory, track, vehicle, *, video=None, fps=30, width=960, height=64
         print("Warp viewer: Space pause/resume; Left/Right seek; R restart; drag mouse to look; WASD move; Esc close.", flush=True)
         while renderer.is_running():
             began = time.perf_counter()
-            _draw_frame(renderer, trajectory, vehicle, state["time"])
+            _draw_frame(renderer, trajectory, vehicle, state["time"], follow_height)
             if not state["paused"]:
                 state["time"] = min(state["time"]+1/fps, end)
             time.sleep(max(0., 1/fps-(time.perf_counter()-began)))
@@ -233,11 +273,14 @@ def main(argv=None):
     parser.add_argument("recording", type=Path)
     parser.add_argument("--video", nargs="?", const=True, type=Path, help="Export MP4 offscreen; defaults beside the recording")
     parser.add_argument("--device", help="Rendering device; defaults to available CUDA, otherwise CPU")
+    parser.add_argument("--follow", nargs="?", const=20.0, type=float, default=None,
+                        help="Top-down camera tracking the car instead of a fixed wide shot; "
+                             "optional meters of altitude (default 20); useful on large tracks")
     args = parser.parse_args(argv)
     try:
         trajectory, track, vehicle = load_recording(args.recording)
         video = args.recording.with_suffix(".mp4") if args.video is True else args.video
-        result = play(trajectory, track, vehicle, video=video, device=args.device)
+        result = play(trajectory, track, vehicle, video=video, device=args.device, follow_height=args.follow)
     except (ValueError, OSError, RuntimeError, KeyError) as error:
         parser.error(str(error))
     if result:

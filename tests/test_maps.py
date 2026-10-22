@@ -92,6 +92,18 @@ def test_invalid_topology_and_scale_fail_clearly(png_map):
         load_map(config)
 
 
+def test_route_extraction_tolerates_a_small_boundary_defect(png_map):
+    # Real track PNGs rarely skeletonize to a perfect ring: a small island
+    # obstacle fully inside the lane (e.g. a rough edge at the start/finish
+    # line) locally forks the skeleton into two short parallel paths. This
+    # must still resolve to one route rather than rejecting the whole map.
+    config, free = png_map
+    free[22:38, 68:76] = False
+    Image.fromarray(np.flipud(free.T).astype(np.uint8) * 255).save(config.with_suffix(".png"))
+    track = load_map(config)
+    assert 25 < track.route_length < 35
+
+
 def test_explicit_csv_route_for_room_and_occupied_border(png_map):
     config, free = png_map
     free[50:190, 50:110] = True
