@@ -12,6 +12,7 @@ import warp as wp
 # Model-free rollouts do not use environment adjoints.
 wp.set_module_options({"enable_backward": False})
 from .terrain import OvalTrack
+from .layers import LayeredTrack
 
 
 @dataclass(frozen=True)
@@ -187,6 +188,8 @@ class DisparityController:
         beams = sim.lidar.config.beams
         radius = sim.vehicle.width / 2 + cfg.safety_margin
         cap = min(cfg.range_cap, sim.lidar.config.far)
+        # Narrow closed roads skip the room corner latch and steer by lookahead.
+        loop = isinstance(sim.track, (OvalTrack, LayeredTrack))
         wp.launch(extend_disparities, dim=(sim.num_envs, beams), inputs=[
             ranges, valid, self.filtered, beams, self.increment, radius,
             cfg.disparity_threshold, cap], device=sim.model.device)
@@ -197,11 +200,11 @@ class DisparityController:
             *sim.lidar.mount_position[:2], cfg.stop_margin,
             min(sim.drive.max_braking, sim.vehicle.friction * 9.81) * .5,
             1.0 / sim.lidar.config.frequency,
-            (0.0 if isinstance(sim.track, OvalTrack) else
+            (0.0 if loop else
              2.0 * sim.drive.wheelbase / np.tan(sim.drive.max_steering) + sim.vehicle.length / 2 + cfg.stop_margin
             + cfg.max_speed * (sim.drive.max_steering / sim.drive.steering_rate
                                + 1.0 / sim.lidar.config.frequency)),
-            sim.drive.wheelbase, cfg.steering_lookahead if isinstance(sim.track, OvalTrack) else 0.0], device=sim.model.device)
+            sim.drive.wheelbase, cfg.steering_lookahead if loop else 0.0], device=sim.model.device)
         sim.invalidate_command_cache()
 
     def __call__(self, sim, time):

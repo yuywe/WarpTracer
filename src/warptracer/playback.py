@@ -9,6 +9,7 @@ import time
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from .layers import LayeredTrack
 from .maps import MapTrack, restore_track, track_state
 from .scene import Track, Vehicle
 from .terrain import OvalTrack
@@ -40,6 +41,7 @@ def save_recording(trajectory, track, vehicle, path):
     path = Path(path).with_suffix(".npz")
     path.parent.mkdir(parents=True, exist_ok=True)
     scene = {"version": 1, "track_kind": "png" if isinstance(track, MapTrack) else
+             "layered" if isinstance(track, LayeredTrack) else
              "oval" if isinstance(track, OvalTrack) else "room",
              "track": track_state(track), "vehicle": asdict(vehicle)}
     arrays = dict(times=trajectory.times, poses=trajectory.poses, velocities=trajectory.velocities,
@@ -111,7 +113,7 @@ def _make_renderer(track, *, headless, fps, width, height, device, follow_height
     pyglet.options["headless"] = headless and sys.platform == "linux"
     import warp.render
     center = (np.array(track.origin) + np.array([track.length, track.width])/2
-              if isinstance(track, MapTrack) else np.zeros(2))
+              if isinstance(track, (MapTrack, LayeredTrack)) else np.zeros(2))
     span = max(track.length, track.width)
     position = np.array([center[0]+.8*span, center[1]-.9*span, .95*span])
     direction = np.array([*center, .15]) - position
@@ -136,10 +138,14 @@ def _make_renderer(track, *, headless, fps, width, height, device, follow_height
 
 def _draw_track(renderer, track):
     identity = _quat_to_gl((0., 0., 0., 1.))
-    if isinstance(track, (OvalTrack, MapTrack)):
+    if isinstance(track, (OvalTrack, MapTrack, LayeredTrack)):
+        colors = {"road": (.28, .30, .33), "structure": (.45, .40, .34)}
+        # Warp 1.17's flat-shading path scrambles the layered meshes' triangles.
+        # Their quads share no vertices, so smooth shading still renders flat faces.
+        smooth = isinstance(track, LayeredTrack)
         for name, (vertices, faces) in track.mesh_parts().items():
-            color = (.28, .30, .33) if name == "road" else (.60, .60, .60)
-            renderer.render_mesh(f"track/{name}", _to_gl(vertices), faces, colors=color, smooth_shading=False)
+            color = colors.get(name, (.60, .60, .60))
+            renderer.render_mesh(f"track/{name}", _to_gl(vertices), faces, colors=color, smooth_shading=smooth)
     else:
         renderer.render_box("floor", tuple(_to_gl((0, 0, -.03))), identity,
                             _extent_to_gl(((track.length+2*track.barrier_thickness)/2,

@@ -15,6 +15,7 @@ from .lidar import LidarConfig
 from .simulation import Simulation
 from .terrain import OvalTrack, road_rotation, road_gradient
 from .maps import MapTrack, track_state
+from .layers import LayeredTrack
 from .map_kernels import route_projection
 
 wp.set_module_options({"enable_backward": False})
@@ -234,6 +235,8 @@ class RacingEnv:
     def __init__(self, config=None, *, device=None, track=None, backend="graph", auto_reset=True):
         self.config = config or EpisodeConfig()
         self.track = track or OvalTrack()
+        if isinstance(self.track, LayeredTrack):
+            raise ValueError("PPO does not support layered tracks yet; use the oval or a PNG map")
         self.map_mode = isinstance(self.track, MapTrack)
         self.route_length = self.track.route_length if self.map_mode else 1.0
         self.axes = ((1., 1., 1., 1., 1., 1.) if self.map_mode else

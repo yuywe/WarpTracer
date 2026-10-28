@@ -86,6 +86,8 @@ def validate_pair(eager, graph, transitions=90):
         if sim.engine == "lean":
             result.extend([sim.lean_motion.numpy().copy(), sim.collision.numpy().copy(),
                            sim.wall_contact_substeps.numpy().copy()])
+            if sim.layered:
+                result.append(sim.layers.numpy().copy())
         if runner.navigator is not None:
             result.extend([runner.navigator.filtered.numpy().copy(), runner.navigator.goals.numpy().copy(),
                            runner.navigator.turns.numpy().copy(), sim.device_commands.numpy().copy()])

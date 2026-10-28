@@ -9,6 +9,7 @@ import warp as wp
 from .scene import Track, Vehicle, build_model
 from .terrain import OvalTrack
 from .maps import MapTrack, track_state
+from .layers import LayeredTrack, SEAM_TOLERANCE
 from .driving import DRIVING_SCENARIOS, DriveConfig, apply_tire_forces, scripted_driver, write_command
 from .lidar import LidarRecording, MountedLidar
 from .lean import LeanState, integrate_bicycle, integrate_bicycle_fused
@@ -47,8 +48,9 @@ class Simulation:
         self.drive = drive or DriveConfig()
         self.oval = isinstance(self.track, OvalTrack)
         self.png_map = isinstance(self.track, MapTrack)
-        if (self.oval or self.png_map) and engine != "lean":
-            raise ValueError("Oval/PNG road following requires lean physics")
+        self.layered = isinstance(self.track, LayeredTrack)
+        if (self.oval or self.png_map or self.layered) and engine != "lean":
+            raise ValueError("Oval/PNG/layered road following requires lean physics")
         self.road_parameters = (wp.vec4(self.track.lane_width, self.track.elevation,
                                        self.track.frequency, self.drive.ride_height(self.vehicle))
                                 if self.oval else wp.vec4())
@@ -98,6 +100,14 @@ class Simulation:
                 self.track.validate_vehicle(self.vehicle)
                 self.initial_pose = self.track.path(self.drive.ride_height(self.vehicle))[:1]
                 self.map_clearance = wp.array(self.track.clearance, dtype=float, device=chosen_device)
+            if self.layered:
+                self.track.validate_vehicle(self.vehicle)
+                self.initial_pose = self.track.path(self.drive.ride_height(self.vehicle))[:1]
+                self.layer_heights = wp.array(self.track.heights, dtype=float, device=chosen_device)
+                self.layer_free = wp.array(self.track.free.astype(np.int32), dtype=int, device=chosen_device)
+                self.layer_clearance = wp.array(self.track.clearance, dtype=float, device=chosen_device)
+                self.initial_layers = np.full(num_envs, self.track.route_layers[0], np.int32)
+                self.layers = wp.zeros(num_envs, dtype=int, device=chosen_device)
             self.initial_pose = np.repeat(self.initial_pose, num_envs, axis=0)
             self.lean_motion = wp.zeros(num_envs, dtype=wp.vec4, device=chosen_device)
             self.collision = wp.zeros(num_envs, dtype=int, device=chosen_device)
@@ -127,6 +137,8 @@ class Simulation:
             self.lean_motion.assign(motion)
             self.collision.zero_()
             self.wall_contact_substeps.zero_()
+            if self.layered:
+                self.layers.assign(self.initial_layers)
         self.steps = 0
         self.command = (0.0, 0.0, 0.0)
         self.target_speed = -1.0
@@ -202,6 +214,9 @@ class Simulation:
         if self.png_map:
             self._map_physics_steps(substeps)
             return
+        if self.layered:
+            self._layer_physics_steps(substeps)
+            return
         inputs = self._lean_inputs()
         # In-place output keeps the same pointers across every graph replay.
         inputs[5], inputs[6] = self.state.body_q, self.state.body_qd
@@ -218,11 +233,25 @@ class Simulation:
             d.rolling_drag, d.max_acceleration, d.max_braking, d.steering_rate, d.speed_gain, substeps],
             device=self.model.device)
 
+    def _layer_physics_steps(self, substeps):
+        from .layer_kernels import integrate_layers
+        d, v = self.drive, self.vehicle
+        wp.launch(integrate_layers, dim=self.num_envs, inputs=[self.state.body_q, self.lean_motion,
+            self.device_commands, self.applied_controls, self.collision, self.state.body_qd,
+            self.wall_contact_substeps, self.layers, self.layer_heights, self.layer_free, self.layer_clearance,
+            wp.vec2(*self.track.origin), self.track.resolution, d.ride_height(v), SEAM_TOLERANCE,
+            self.dt, v.mass, v.length, v.width, d.wheelbase, v.friction, d.lateral_stiffness,
+            d.rolling_drag, d.max_acceleration, d.max_braking, d.steering_rate, d.speed_gain, substeps],
+            device=self.model.device)
+
     def _physics_step(self):
         """One capture-safe substep; callers manage time and sensor scheduling."""
         if self.engine == "lean":
             if self.png_map:
                 self._map_physics_steps(1)
+                return
+            if self.layered:
+                self._layer_physics_steps(1)
                 return
             wp.launch(integrate_bicycle, dim=self.num_envs, inputs=self._lean_inputs(),
                       device=self.model.device)
@@ -331,7 +360,7 @@ class Simulation:
             "steps_per_second": total_steps / elapsed,
             "timing_includes_pose_recording": record,
             "track": track_state(self.track), "vehicle": asdict(self.vehicle),
-            "track_kind": "png" if self.png_map else ("oval" if self.oval else "room"),
+            "track_kind": "png" if self.png_map else "layered" if self.layered else ("oval" if self.oval else "room"),
             "drive": asdict(self.drive) if self.driving else None,
             "lidar": ({**asdict(self.lidar.config), "mount_position": self.lidar.mount_position,
                        "algorithm": self.lidar.algorithm, "march_diagnostics": self.lidar.diagnostics(),

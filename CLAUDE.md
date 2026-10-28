@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 WarpTracer is a minimal GPU-accelerated racing simulator built on NVIDIA Warp
 (and optionally Newton physics): a box car with vehicle-mounted LiDAR, driving in
 a flat room or on an elevated oval track, navigated by a reactive disparity-extender
-controller. Viser exports interactive HTML replays. Active work is on the
+controller (or a PPO policy trained on the oval or a PNG occupancy map). Replays
+use Warp's native OpenGL viewer or an offscreen MP4. Active work is on the
 `performance-prototype` branch (not `main`).
 
 ## Commands
@@ -16,12 +17,22 @@ Run everything from the repository root; `uv` manages the single root environmen
 (no nested project, no second venv).
 
 ```bash
-uv run warptracer demo                      # 30s disparity-navigation replay -> outputs/disparity.html
-uv run warptracer demo oval                 # elevated oval track replay -> outputs/oval.html
-uv run warptracer demo accelerate-brake     # -> outputs/accelerate-brake.html
-uv run warptracer demo circle               # -> outputs/circle.html
+uv run warptracer demo                      # 30s disparity navigation -> outputs/disparity.npz (+ .json)
+uv run warptracer demo oval                 # elevated oval -> outputs/oval.npz
+uv run warptracer demo oval-grid --view     # oval with grid LiDAR, then open the native Warp viewer
+uv run warptracer demo oval --video         # render outputs/oval.mp4 offscreen (Colab)
+uv run warptracer demo oval --follow        # top-down camera tracking the car (optional altitude, default 20 m)
 uv run warptracer demo --seconds 60         # override one setting; see --help for the rest
-uv run warptracer demo --help
+uv run warptracer demo bridge               # two-layer figure eight: under, then over a 0.7 m bridge
+uv run warptracer demo --help               # scenarios: oval, oval-grid, bridge, disparity, accelerate-brake,
+                                            #   circle, s-turn, drop, wall-impact
+
+uv run warptracer view outputs/oval.npz     # reopen a recording (add --video to render an MP4 instead)
+
+uv run warptracer map maps/my-track.png --resolution 0.05   # create a JSON sidecar + route preview
+uv run warptracer train smoke               # PPO path check on CPU; presets: smoke, oval, large
+uv run warptracer train oval --map maps/my-track.png        # train on a PNG map (oval/large need CUDA)
+uv run warptracer evaluate --view           # evaluate outputs/ppo/checkpoint.pt (or --video)
 
 uv run warptracer benchmark                 # quick preset (CPU-friendly) -> outputs/quick.json
 uv run warptracer benchmark navigation      # LiDAR vs. disparity-control throughput; requires CUDA
@@ -37,6 +48,10 @@ uv run --extra dev pytest tests/test_disparity.py::test_name -q  # single test
 
 The `oval`, `navigation`, `batches`, and `fusion` presets fail immediately without
 a CUDA GPU; only `quick` (default) runs on CPU. First run compiles Warp kernels.
+Without `--view`/`--video`, demos and evaluation only save the recording; no
+graphics context is created. The viewer needs an NVIDIA CUDA driver and an
+OpenGL context (Warp 1.17 allocates CUDA pinned memory even in its fallback), so
+it can't run on a CPU-only host, though simulating and recording still work there.
 Older module-level entry points (`warptracer-demo`, `python -m warptracer.*`) still
 work for lower-level/custom experiments.
 
@@ -94,13 +109,33 @@ is the N=1 special case of the same APIs.
 
 **Recording/replay.** `simulation.py:Simulation.run()` drives either a Python
 callback controller or a `TransitionRunner`, from a fresh `reset()`, and returns a
-`Trajectory` (poses, velocities, actions, optional `LidarRecording`). `demo.py`
-serializes this to `.npz` (arrays) + `.json` (metadata) and `playback.py:save_html`
-renders the Viser replay — replay scrubbing only replays recorded motion, it does
-not rerun physics.
+`Trajectory` (poses, velocities, actions, optional `LidarRecording`).
+`playback.py:save_recording` writes a self-contained `.npz` (numeric arrays plus
+embedded versioned JSON scene/metadata strings, no pickle) and `demo.py` also
+writes a `.json` metadata sidecar. `playback.py:play` replays it with
+`warp.render.OpenGLRenderer` (pyglet window; or offscreen frames encoded to MP4
+via ImageIO/FFmpeg). There is no Viser or HTML exporter anymore. Playback only
+replays recorded motion at 30 display FPS and never reruns physics. Rendering
+happens after simulation and is excluded from reported throughput.
 
-**CLI.** `cli.py` is a thin dispatcher to `demo.py` and `benchmark.py` (`argparse`-based,
-one subcommand each). `benchmark.py:PRESETS` centralizes workload/device/env-count/
+**Maps and PPO.** `maps.py` (`MapTrack`, `load_map`) imports occupancy PNGs
+(white = drivable) as flat tracks with 1 m walls. A PNG needs a same-stem `.json`
+sidecar giving meters per pixel. The ROS-style `.yaml` files under `maps/` are not
+read by `maps.py`. `train.py` runs batched PPO from LiDAR plus vehicle features
+(presets `smoke`/`oval`/`large`). Checkpoints embed the map geometry, so
+evaluation and resume restore it without the original files. See `docs/ppo.md` and
+`docs/png-maps.md`.
+
+**Layered tracks.** `layers.py` (`LayeredTrack`, `figure_eight_bridge`) stacks 2.5D
+height layers (floor + decks) so a road can cross over itself; `layer_kernels.py`
+integrates them. Each car carries a layer index and switches only at seams, where
+another layer is drivable at the same height. Physics reads grids; LiDAR/replay use
+a mesh built from them (mesh LiDAR only). PPO does not support them yet. See
+`docs/layers.md`.
+
+**CLI.** `cli.py` is a thin dispatcher (`demo`, `benchmark`, `train`, `evaluate`,
+`map`, `view`) to the `main` of `demo.py`, `benchmark.py`, `train.py`, `maps.py`
+and `playback.py`. `benchmark.py:PRESETS` centralizes workload/device/env-count/
 duration combinations so adding a new benchmark preset is a dict entry plus
 `make_runner` wiring, not new argument-parsing code.
 
@@ -113,7 +148,9 @@ duration combinations so adding a new benchmark preset is a dict entry plus
   because they're checked against unfused eager execution.
 - `docs/` has the authoritative behavioral detail for vehicle/sensor parameters
   (`docs/reference.md`), the disparity controller (`docs/navigation.md`), the oval
-  track (`docs/tracks.md`), and benchmark presets/units (`docs/benchmarking.md`).
+  track (`docs/tracks.md`), benchmark presets/units (`docs/benchmarking.md`),
+playback/video (`docs/playback.md`), grid LiDAR (`docs/grid-lidar.md`), layered tracks (`docs/layers.md`), PNG maps
+(`docs/png-maps.md`) and PPO (`docs/ppo.md`).
   Prefer updating these alongside behavior changes rather than duplicating detail
   in code comments.
 - `VALIDATION.md` records point-in-time test/behavior validation runs (including

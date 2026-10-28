@@ -11,6 +11,7 @@ from racesense3d import box, from_quads, lidar
 from racesense3d.core import Scene
 from .terrain import OvalTrack
 from .maps import MapTrack
+from .layers import LayeredTrack
 
 
 @dataclass(frozen=True)
@@ -103,7 +104,8 @@ class MountedLidar:
             self.scene = GridScene(field, device=device)
         elif isinstance(track, MapTrack):
             raise ValueError("PNG maps use grid LiDAR; choose backend='grid'")
-        elif isinstance(track, OvalTrack):
+        elif isinstance(track, (OvalTrack, LayeredTrack)):
+            # Layered decks overhang the floor, so they need the mesh, not a height field.
             self.scene = Scene(*track.mesh(), device=device)
         else:
             # Cover every possible floor hit within range inside the enclosure.

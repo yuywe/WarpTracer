@@ -298,10 +298,13 @@ def load_map(path):
 
 
 def track_state(track):
-    return track.state_dict() if isinstance(track, MapTrack) else asdict(track)
+    return track.state_dict() if hasattr(track, "state_dict") else asdict(track)
 
 
 def restore_track(state):
+    if state.get("kind") == "layered":
+        from .layers import LayeredTrack
+        return LayeredTrack.from_state_dict(state)
     return MapTrack.from_state_dict(state) if state.get("kind") == "png" else OvalTrack(**state)
 
 
