@@ -59,7 +59,8 @@ def test_demo_command_exports_navigation_without_extra_flags(tmp_path):
     main(["demo", "--seconds", ".1", "--output", str(tmp_path)])
     metadata = json.loads((tmp_path / "disparity.json").read_text())
     arrays = np.load(tmp_path / "disparity.npz")
-    assert (tmp_path / "disparity.html").stat().st_size > 1000
+    assert (tmp_path / "disparity.npz").stat().st_size > 1000
+    assert "scene_json" in arrays and "lidar_directions" in arrays
     assert metadata["controller"] == "disparity"
     assert metadata["backend"] == "graph" and metadata["integrator"] == "fused"
     assert metadata["lidar"]["frequency"] == 60

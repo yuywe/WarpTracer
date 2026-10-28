@@ -11,6 +11,7 @@ import warp as wp
 from .ppo import PPO, PPOConfig, ActorCritic
 from .rl_env import RacingEnv, EpisodeConfig
 from .terrain import OvalTrack
+from .maps import MapTrack, load_map, restore_track, track_state
 
 
 PRESETS = {
@@ -51,7 +52,7 @@ def _rewind_log(path, iteration):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="PPO on the elevated oval; presets choose all training settings")
+    parser = argparse.ArgumentParser(description="PPO on an oval or PNG track; presets choose training settings")
     parser.add_argument("preset", choices=PRESETS, nargs="?", default="oval")
     parser.add_argument("--device", help="CPU or CUDA device override")
     parser.add_argument("--updates", type=int, help="Additional PPO updates for this run")
@@ -59,6 +60,7 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output", type=Path, default=Path("outputs/ppo"))
     parser.add_argument("--resume", type=Path)
+    parser.add_argument("--map", type=Path, help="PNG map JSON, or PNG with a same-stem JSON sidecar")
     args = parser.parse_args(argv)
     chosen = PRESETS[args.preset]
     device = args.device or chosen["device"]
@@ -81,7 +83,12 @@ def main(argv=None):
         config = PPOConfig(**state["ppo_config"])
         if args.envs is not None and args.envs != episode.num_envs:
             parser.error("Resuming requires the checkpoint environment count")
-    track = OvalTrack(**state["environment"]["track"]) if state else OvalTrack()
+    try:
+        track = restore_track(state["environment"]["track"]) if state else (load_map(args.map) if args.map else OvalTrack())
+        if state and args.map and track_state(load_map(args.map)) != state["environment"]["track"]:
+            parser.error("Resume uses the saved map; --map must match that checkpoint")
+    except (ValueError, OSError, KeyError) as error:
+        parser.error(str(error))
     env = RacingEnv(episode, device=device, track=track)
     trainer = PPO(env, config)
     if state:
@@ -89,6 +96,8 @@ def main(argv=None):
     args.output.mkdir(parents=True, exist_ok=True)
     checkpoint = args.output / "checkpoint.pt"
     settings = {"preset": args.preset, "device": device, "episode": asdict(episode), "ppo": asdict(config),
+                "map": track.name if isinstance(track, MapTrack) else "oval",
+                "map_source": str(args.map) if args.map else None,
                 "additional_updates": updates, "starting_iteration": trainer.iteration,
                 "resumed_from": str(args.resume) if args.resume else None}
     (args.output / "config.json").write_text(json.dumps(settings, indent=2) + "\n")
@@ -96,7 +105,7 @@ def main(argv=None):
     if args.resume and args.resume.resolve() == checkpoint.resolve():
         _rewind_log(log_path, trainer.iteration)
     print(f"PPO {args.preset}: {episode.num_envs} independent cars, {config.rollout_steps} rollout steps, "
-          f"{updates} updates on {device}; checkpoint: {checkpoint}", flush=True)
+          f"{updates} updates on {device}; map: {settings['map']}; checkpoint: {checkpoint}", flush=True)
     mode = "a" if state else "w"
     # There is a valid recovery point even if the first update is interrupted.
     save_checkpoint(trainer, checkpoint)
@@ -122,7 +131,7 @@ def main(argv=None):
     except KeyboardInterrupt:
         print(f"Interrupted; checkpoint at {checkpoint} contains saved update {last_saved_iteration}", flush=True)
         return
-    print(f"Saved {checkpoint}; evaluate with: uv run --extra rl warptracer evaluate {checkpoint}", flush=True)
+    print(f"Saved {checkpoint}; evaluate with: uv run warptracer evaluate {checkpoint}", flush=True)
 
 
 def evaluate(argv=None):
@@ -130,12 +139,18 @@ def evaluate(argv=None):
     parser.add_argument("checkpoint", type=Path, nargs="?", default=Path("outputs/ppo/checkpoint.pt"))
     parser.add_argument("--device", default=None)
     parser.add_argument("--output", type=Path, default=Path("outputs/ppo/evaluation"))
+    display = parser.add_mutually_exclusive_group()
+    display.add_argument("--view", action="store_true", help="Open the recording in Warp's native viewer")
+    display.add_argument("--video", action="store_true", help="Render a Warp MP4 after evaluation (Colab/offscreen)")
+    parser.add_argument("--follow", nargs="?", const=20.0, type=float, default=None,
+                        help="Top-down camera tracking the car instead of a fixed wide shot; "
+                             "optional meters of altitude (default 20); useful on large tracks")
     args = parser.parse_args(argv)
     state = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     if state.get("format_version") != 1:
         parser.error("Unsupported checkpoint version")
     episode = replace(EpisodeConfig(**state["environment"]["config"]), num_envs=1)
-    env = RacingEnv(episode, device=args.device, track=OvalTrack(**state["environment"]["track"]), auto_reset=False)
+    env = RacingEnv(episode, device=args.device, track=restore_track(state["environment"]["track"]), auto_reset=False)
     agent = ActorCritic(env.obs_dim, env.action_dim, state["ppo_config"]["hidden"]).to(env.torch_device)
     agent.load_state_dict(state["agent"])
     agent.eval()
@@ -175,6 +190,7 @@ def evaluate(argv=None):
     if diagnostics["iteration_limit_events"]:
         raise RuntimeError(f"Evaluation exhausted LiDAR rays: {diagnostics}")
     metrics = {"checkpoint": str(args.checkpoint), "training_iteration": state["iteration"],
+               "map": env.track.name if isinstance(env.track, MapTrack) else "oval",
                "return": total_return, "lap_progress": progress, "successful_lap": reason == 2,
                "termination_reason": reason, "transitions": frame+1, "simulated_seconds": (frame+1)/60,
                "march_diagnostics": diagnostics}
@@ -183,12 +199,19 @@ def evaluate(argv=None):
     if poses:
         from .simulation import Trajectory
         from .lidar import LidarRecording
-        from .playback import save_html
+        from .playback import save_recording
         scans = LidarRecording(np.array(times), np.array(lidar_poses), np.array(ranges), np.array(masks), env.sim.lidar.rays.directions)
         trajectory = Trajectory(np.array(times), np.array(poses), np.array(velocities), metrics, np.array(controls), scans)
-        np.savez_compressed(args.output.with_suffix(".npz"), times=trajectory.times, poses=trajectory.poses,
-                            velocities=trajectory.velocities, actions=trajectory.actions,
-                            lidar_poses=scans.poses, lidar_ranges=scans.ranges, lidar_valid=scans.valid)
-        save_html(trajectory, env.track, env.sim.vehicle, args.output.with_suffix(".html"))
-        print(f"Replay: {args.output.with_suffix('.html')}", flush=True)
+        recording = save_recording(trajectory, env.track, env.sim.vehicle, args.output)
+        print(f"Recording: {recording}; view with: uv run warptracer view {recording}", flush=True)
     print(json.dumps(metrics, indent=2), flush=True)
+    if poses and (args.view or args.video):
+        from .playback import play
+        try:
+            path = play(trajectory, env.track, env.sim.vehicle,
+                        video=args.output.with_suffix(".mp4") if args.video else None, device=env.device,
+                        follow_height=args.follow)
+        except (RuntimeError, OSError) as error:
+            parser.error(f"Evaluation and recording saved. {error}")
+        if path:
+            print(f"Warp video: {path}", flush=True)

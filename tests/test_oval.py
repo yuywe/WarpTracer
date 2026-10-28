@@ -150,7 +150,7 @@ def test_short_oval_command_exports_track_and_lap_metadata(tmp_path):
     report = json.loads((tmp_path / "oval.json").read_text())
     assert report["track_kind"] == "oval" and report["track"]["elevation"] == .4
     assert report["completed_laps"] == 0 and report["wall_contact_substeps"] == 0
-    assert (tmp_path / "oval.html").stat().st_size > 1000
+    assert (tmp_path / "oval.npz").stat().st_size > 1000
 
 
 def test_oval_benchmark_preset_measures_navigation_on_the_loop(tmp_path):

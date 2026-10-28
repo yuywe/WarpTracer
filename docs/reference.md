@@ -88,7 +88,7 @@ supports the room only.
 | Support | Height/normal constrained to road; flat in the room | Spring/damper support |
 | Walls | Chassis footprint contained inside the room or oval lane; stop on contact | Newton contacts |
 | Integration | One Warp kernel per substep, or fused substeps via TransitionRunner | Tire kernel, collision pipeline, XPBD solver |
-| Sensors/viewer | Existing 3D LiDAR and Viser playback | Same |
+| Sensors/viewer | Existing 3D LiDAR and Warp OpenGL playback | Same |
 
 Lean uses an implicit lateral/yaw force prediction to handle stiffness at low
 speeds, then clips forces to the available grip. It is an illustrative racing

@@ -10,8 +10,9 @@ from .lidar import LidarConfig
 from .disparity import DisparityConfig
 from .execution import TransitionRunner
 from .terrain import OvalTrack
+from .layers import figure_eight_bridge
 
-SCENARIOS = ("oval", "oval-grid", "disparity", "accelerate-brake", "circle", "s-turn", "drop", "wall-impact")
+SCENARIOS = ("oval", "oval-grid", "bridge", "disparity", "accelerate-brake", "circle", "s-turn", "drop", "wall-impact")
 
 
 def main(argv=None):
@@ -31,26 +32,35 @@ def main(argv=None):
     parser.add_argument("--lidar-hz", type=int, default=60, help="Scan rate (default: 60), must divide physics Hz")
     parser.add_argument("--lidar-backend", choices=("mesh", "grid"), default=None, help="oval-grid selects grid; other demos select mesh")
     parser.add_argument("--headless", action="store_true", help="Skip replay and intermediate CPU copies")
+    display = parser.add_mutually_exclusive_group()
+    display.add_argument("--view", action="store_true", help="Open the recorded run in Warp's native viewer")
+    display.add_argument("--video", action="store_true", help="Render an MP4 with Warp (Colab/offscreen)")
+    parser.add_argument("--follow", nargs="?", const=20.0, type=float, default=None,
+                        help="Top-down camera tracking the car instead of a fixed wide shot; "
+                             "optional meters of altitude (default 20); useful on large tracks")
     parser.add_argument("--output", type=Path, default=Path("outputs"))
     args = parser.parse_args(argv)
+    if args.headless and (args.view or args.video):
+        parser.error("--headless skips recording; omit it when using --view or --video")
     if args.scenario_name is not None and args.scenario is not None:
         parser.error("Choose a positional scenario or --scenario, not both")
     args.scenario = args.scenario or args.scenario_name or "disparity"
     oval = args.scenario in ("oval", "oval-grid")
-    navigation = args.scenario == "disparity" or oval
+    bridge = args.scenario == "bridge"
+    navigation = args.scenario == "disparity" or oval or bridge
     if navigation and args.no_lidar:
         parser.error("Disparity navigation requires LiDAR")
-    if oval and args.physics != "lean":
-        parser.error("The oval demo currently uses lean road-following physics")
+    if (oval or bridge) and args.physics != "lean":
+        parser.error("The oval and bridge demos use lean road-following physics")
     lidar_backend = args.lidar_backend or ("grid" if args.scenario == "oval-grid" else "mesh")
     if lidar_backend == "grid" and not oval:
         parser.error("Grid LiDAR currently requires the oval or oval-grid demo")
     physics = "newton" if args.scenario in ("drop", "wall-impact") else args.physics
-    sim = Simulation(track=OvalTrack() if oval else None,
+    sim = Simulation(track=OvalTrack() if oval else figure_eight_bridge() if bridge else None,
                      engine=physics, scenario="drive" if navigation else args.scenario, device=args.device, physics_hz=args.physics_hz,
                      lidar=None if args.no_lidar else LidarConfig(beams=args.lidar_beams, frequency=args.lidar_hz, backend=lidar_backend))
     duration = args.seconds if args.seconds is not None else (
-        120.0 if oval else 30.0 if navigation else 10.0 if sim.driving else 4.0)
+        120.0 if oval or bridge else 30.0 if navigation else 10.0 if sim.driving else 4.0)
     runner = None
     if navigation:
         runner = TransitionRunner(sim, controller="disparity", backend=args.backend,
@@ -69,20 +79,19 @@ def main(argv=None):
             progress = max(0.0, float((phase[-1] - phase[0]) / (2 * np.pi)))
             trajectory.metadata["lap_progress"] = progress
             trajectory.metadata["completed_laps"] = int(progress)
+    if bridge:
+        trajectory.metadata["completed_laps"] = None
+        if not args.headless:
+            progress = max(0.0, sim.track.route_progress(trajectory.poses))
+            trajectory.metadata["lap_progress"] = progress
+            trajectory.metadata["completed_laps"] = int(progress)
     args.output.mkdir(parents=True, exist_ok=True)
     stem = args.output / (args.scenario + ("_headless" if args.headless else ""))
-    arrays = dict(times=trajectory.times, poses=trajectory.poses,
-                  velocities=trajectory.velocities, actions=trajectory.actions)
-    if trajectory.lidar is not None:
-        scans = trajectory.lidar
-        arrays.update(lidar_times=scans.times, lidar_poses=scans.poses, lidar_ranges=scans.ranges,
-                      lidar_valid=scans.valid, lidar_directions=scans.directions)
-    np.savez_compressed(stem.with_suffix(".npz"), **arrays)
+    from .playback import save_recording
+    recording = save_recording(trajectory, sim.track, sim.vehicle, stem)
     stem.with_suffix(".json").write_text(json.dumps(trajectory.metadata, indent=2) + "\n")
     if not args.headless:
-        from .playback import save_html
-        path = save_html(trajectory, sim.track, sim.vehicle, stem.with_suffix(".html"))
-        print(f"Interactive replay: {path}")
+        print(f"Recording: {recording}; view with: uv run warptracer view {recording}")
     print(f"{trajectory.metadata['simulated_seconds']:.2f} simulated seconds; "
           f"{trajectory.metadata['elapsed_seconds']:.3f} s elapsed; "
           f"{trajectory.metadata['steps_per_second']:.0f} physics steps/s on {sim.model.device}.")
@@ -97,10 +106,26 @@ def main(argv=None):
         print(f"Physics: {sim.engine}; one box chassis, one oval road, two continuous barriers.")
         if not args.headless:
             print(f"Completed laps: {trajectory.metadata['completed_laps']}; elevation range: {np.ptp(trajectory.poses[:, 2]):.3f} m.")
+    elif bridge:
+        print(f"Physics: {sim.engine}; one box chassis, figure-eight floor layer plus a "
+              f"{sim.track.route[:, 2].max():.2f} m bridge layer.")
+        if not args.headless:
+            elevated = trajectory.poses[:, 2] > sim.drive.ride_height(sim.vehicle) + .35
+            print(f"Completed laps: {trajectory.metadata['completed_laps']}; "
+                  f"{100 * elevated.mean():.0f}% of samples on the upper half of the bridge.")
     else:
         print(f"Physics: {sim.engine}; one box chassis, one floor, four walls.")
     if runner is not None and physics == "lean":
         print(f"Wall-contact substeps: {trajectory.metadata['wall_contact_substeps']}")
+    if args.view or args.video:
+        from .playback import play
+        try:
+            path = play(trajectory, sim.track, sim.vehicle, video=stem.with_suffix(".mp4") if args.video else None,
+                        device=sim.model.device, follow_height=args.follow)
+        except (RuntimeError, OSError) as error:
+            parser.error(f"Recording saved to {recording}. {error}")
+        if path:
+            print(f"Warp video: {path}")
 
 
 if __name__ == "__main__":

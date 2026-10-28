@@ -21,7 +21,7 @@ def test_evaluation_records_initial_and_terminal_state_for_one_step_episode(tmp_
     evaluate([str(checkpoint), "--device", "cpu", "--output", str(output)])
     metrics = json.loads(output.with_suffix(".json").read_text())
     assert metrics["termination_reason"] == 3 and metrics["transitions"] == 1
-    assert output.with_suffix(".html").exists()
+    assert output.with_suffix(".npz").exists()
     with np.load(output.with_suffix(".npz")) as recording:
         np.testing.assert_allclose(recording["times"], [0, 1/60])
         assert recording["poses"].shape == (2, 7)
