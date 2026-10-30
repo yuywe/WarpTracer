@@ -179,6 +179,18 @@ speed was 1.37 m/s. Recorded height spans 0.103-0.803 m, and samples within
 under and over the 0.70 m deck. This is one default-geometry run, not a
 throughput benchmark; the native viewer was not opened.
 
+PPO on the bridge (same machine and day): the suite grew to **231 passed, 1
+skipped** with five layered PPO tests (route-layer respawns on CPU and CUDA,
+eager/graph parity, route cursor staying on the deck over the crossing, exact
+resume, smoke train + evaluate). `uv run warptracer train oval --bridge` (seed 0,
+1,024 cars, 300 updates) took 281 s of rollout+update time; rollout ran at
+roughly 120k-150k transitions/s, with some updates near 50k/s on the shared
+laptop GPU. The first successful laps appeared at update 21; over the last 50
+updates, 4,837 of 4,849 finished episodes were laps (99.8%). Deterministic
+evaluation completed a lap in 11.35 s (681 transitions, return 234.9, peak
+4.8 m/s), passing under and over the deck. One seed and one evaluation episode,
+not a convergence study; the replay was not inspected in the viewer.
+
 ## EDT distance-field LiDAR
 
 The old `heightfield.py` cell/tile traversal has been deleted. The `grid` backend

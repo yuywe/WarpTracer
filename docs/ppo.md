@@ -27,6 +27,14 @@ the training command. The preset still controls the training budget and car coun
 See [PNG maps](png-maps.md) for the short local workflow and Colab upload cell.
 Map geometry is embedded in checkpoints and automatically restored for evaluation/resume.
 
+Add `--bridge` instead to train on the two-layer figure eight from
+[layered tracks](layers.md), which drives under and then over its own bridge:
+`uv run warptracer train oval --bridge`. Layered tracks use mesh LiDAR (a single
+height field cannot represent the deck overhang), so `lidar_exhaustions` is
+always 0 and `max_march_iterations` is null in the training log. Respawned cars
+start on the layer of their route sample, tilted to its surface; progress
+follows the route, so the bridge and the road under it count separately.
+
 | Preset | Device | Cars | Steps per car per rollout | PPO updates | Aggregate transitions |
 | --- | --- | ---: | ---: | ---: | ---: |
 | `smoke` | CPU | 8 | 32 | 3 | 768 |
@@ -86,8 +94,9 @@ Rendering is optional and happens after evaluation; [viewing details](playback.m
 by the next step; rollouts copy them. `final_observation` is the freshly sensed
 state before auto-reset. Finished cars receive new random centerline phases and
 small heading perturbations; survivors keep their state and scan. RNG sequences
-are owned by individual cars and depend on their episode counts. The second
-LiDAR launch marches only reset cars, not the whole batch.
+are owned by individual cars and depend on their episode counts. With grid
+LiDAR the second launch marches only reset cars, not the whole batch; mesh LiDAR
+(layered tracks) rescans every car, which leaves survivors' ranges unchanged.
 
 CUDA arrays alias Torch buffers without host transfers. Warp kernels and captured
 environment graphs run on the current Torch CUDA stream. Policy inference and
@@ -106,7 +115,7 @@ EDT scan instead of silently learning from an incomplete one.
 | Action 1 | Positive throttle, negative brake, zero coasting; throttle is disabled at 6 m/s |
 | Observation 0–107 | Ranges clipped/normalized to 10 m; misses are 1 |
 | Observation 108–111 | Forward/lateral velocity, yaw rate, applied steering; fixed physical scaling |
-| Observation 112–113 | Terrain grade along/across the vehicle heading, normalized to 20% |
+| Observation 112–113 | Terrain grade along/across the vehicle heading, normalized to 20%; layered tracks read it from the chassis tilt |
 | Reward | 5 × signed local centerline arc progress in meters, minus 0.01 per simulated second |
 | Collision/off-track/nonfinite/stall | Terminal, reward -5; stall means speed ≤0.05 m/s for 600 transitions |
 | Completed forward lap | Terminal, additional reward +5 |
@@ -160,7 +169,8 @@ Warp interoperability: [v1.17 stream_from_torch](https://nvidia.github.io/warp/v
 ## Limits
 
 Supported tasks are the analytic elevated oval and flat PNG occupancy tracks,
-with uncached EDT LiDAR and lean physics. Height-map import, domain randomization,
+with uncached EDT LiDAR, and layered tracks (the generated bridge figure eight)
+with mesh LiDAR, all on lean physics. Height-map import, domain randomization,
 reverse driving, multi-car interactions and calibrated slope/tire dynamics remain
 future work. The environment is a Torch vector interface, not a Gymnasium adapter.
 CPU correctness/learning checks do not establish native GPU performance or

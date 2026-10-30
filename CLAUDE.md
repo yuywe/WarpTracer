@@ -32,6 +32,7 @@ uv run warptracer view outputs/oval.npz     # reopen a recording (add --video to
 uv run warptracer map maps/my-track.png --resolution 0.05   # create a JSON sidecar + route preview
 uv run warptracer train smoke               # PPO path check on CPU; presets: smoke, oval, large
 uv run warptracer train oval --map maps/my-track.png        # train on a PNG map (oval/large need CUDA)
+uv run warptracer train oval --bridge                       # train on the two-layer bridge figure eight
 uv run warptracer evaluate --view           # evaluate outputs/ppo/checkpoint.pt (or --video)
 
 uv run warptracer benchmark                 # quick preset (CPU-friendly) -> outputs/quick.json
@@ -130,8 +131,9 @@ evaluation and resume restore it without the original files. See `docs/ppo.md` a
 height layers (floor + decks) so a road can cross over itself; `layer_kernels.py`
 integrates them. Each car carries a layer index and switches only at seams, where
 another layer is drivable at the same height. Physics reads grids; LiDAR/replay use
-a mesh built from them (mesh LiDAR only). PPO does not support them yet. See
-`docs/layers.md`.
+a mesh built from them (mesh LiDAR only). PPO trains on the bridge figure eight
+(`train --bridge`); `rl_env.py` treats layered tracks like PNG maps for route
+progress and respawns each car on its route sample's layer. See `docs/layers.md`.
 
 **CLI.** `cli.py` is a thin dispatcher (`demo`, `benchmark`, `train`, `evaluate`,
 `map`, `view`) to the `main` of `demo.py`, `benchmark.py`, `train.py`, `maps.py`

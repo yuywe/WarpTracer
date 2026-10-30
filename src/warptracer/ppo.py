@@ -204,7 +204,9 @@ class PPO:
         self._sync()
         collected = time.perf_counter()
         sensor = self.env.sim.lidar.sensor
-        exhaustion = int(wp.to_torch(sensor.limit_counts).sum().item())
+        # Only the grid marcher can exhaust a ray; mesh LiDAR (layered tracks) cannot.
+        marched = hasattr(sensor, "limit_counts")
+        exhaustion = int(wp.to_torch(sensor.limit_counts).sum().item()) if marched else 0
         if exhaustion:
             raise RuntimeError(f"PPO rollout contained {exhaustion} exhausted LiDAR rays; not updating from incomplete scans")
         if not torch.isfinite(advantages).all() or not torch.isfinite(returns).all():
@@ -228,7 +230,7 @@ class PPO:
                 "rollout_transitions_per_second": self.batch_size / (collected-start),
                 "training_transitions_per_second": self.batch_size / (end-start),
                 "lidar_exhaustions": exhaustion,
-                "max_march_iterations": int(wp.to_torch(sensor.iteration_maxima).max().item())}
+                "max_march_iterations": int(wp.to_torch(sensor.iteration_maxima).max().item()) if marched else None}
 
     def state_dict(self):
         return {"format_version": 1, "ppo_config": asdict(self.config), "agent": self.agent.state_dict(),

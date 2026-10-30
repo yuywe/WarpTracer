@@ -65,6 +65,7 @@ compressed grids instead.
 - The disparity controller is unchanged (loop mode, as on the oval). Measured on
   the default geometry: about three laps in 120 s with zero wall contacts. Other
   geometry needs its own navigation check.
-- PPO training does not support layered tracks yet.
+- PPO trains on the figure eight with `uv run warptracer train oval --bridge`
+  (see [PPO](ppo.md)); there is no CLI option yet for other layered geometry.
 - Warp 1.17's flat-shading path scrambles these meshes, so replay draws them
   with smooth shading (faces still look flat; quads share no vertices).

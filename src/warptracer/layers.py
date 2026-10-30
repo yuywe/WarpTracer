@@ -70,6 +70,7 @@ class LayeredTrack:
         self.segment_lengths = np.linalg.norm(np.roll(self.route, -1, axis=0) - self.route, axis=1)
         if self.segment_lengths.min() < 1e-5 or self.segment_lengths.max() > .151:
             raise ValueError("Route must be densely sampled (segments <= 0.15 m)")
+        self.arc = np.r_[0, np.cumsum(self.segment_lengths[:-1])].astype(np.float32)
         self.route_length = float(self.segment_lengths.sum())
         # A node is open on layer L where another layer is drivable at L's height:
         # walls stop there so the car can cross the seam. Everything else is wall.
@@ -83,7 +84,7 @@ class LayeredTrack:
         self.clearance = np.stack([distance_transform_edt(~w) * self.resolution - self.resolution / np.sqrt(2)
                                    for w in walls]).astype(np.float32)
         for array in (self.heights, self.free, self.seam, self.clearance, self.route,
-                      self.route_layers, self.segment_lengths):
+                      self.route_layers, self.segment_lengths, self.arc):
             array.flags.writeable = False
 
     def _grid(self, points):

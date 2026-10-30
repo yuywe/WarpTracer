@@ -11,7 +11,8 @@ import warp as wp
 from .ppo import PPO, PPOConfig, ActorCritic
 from .rl_env import RacingEnv, EpisodeConfig
 from .terrain import OvalTrack
-from .maps import MapTrack, load_map, restore_track, track_state
+from .layers import figure_eight_bridge
+from .maps import load_map, restore_track, track_state
 
 
 PRESETS = {
@@ -52,7 +53,7 @@ def _rewind_log(path, iteration):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="PPO on an oval or PNG track; presets choose training settings")
+    parser = argparse.ArgumentParser(description="PPO on an oval, PNG or bridge track; presets choose training settings")
     parser.add_argument("preset", choices=PRESETS, nargs="?", default="oval")
     parser.add_argument("--device", help="CPU or CUDA device override")
     parser.add_argument("--updates", type=int, help="Additional PPO updates for this run")
@@ -60,7 +61,10 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output", type=Path, default=Path("outputs/ppo"))
     parser.add_argument("--resume", type=Path)
-    parser.add_argument("--map", type=Path, help="PNG map JSON, or PNG with a same-stem JSON sidecar")
+    track_choice = parser.add_mutually_exclusive_group()
+    track_choice.add_argument("--map", type=Path, help="PNG map JSON, or PNG with a same-stem JSON sidecar")
+    track_choice.add_argument("--bridge", action="store_true",
+                              help="Two-layer figure eight that crosses over itself (see docs/layers.md)")
     args = parser.parse_args(argv)
     chosen = PRESETS[args.preset]
     device = args.device or chosen["device"]
@@ -84,9 +88,11 @@ def main(argv=None):
         if args.envs is not None and args.envs != episode.num_envs:
             parser.error("Resuming requires the checkpoint environment count")
     try:
-        track = restore_track(state["environment"]["track"]) if state else (load_map(args.map) if args.map else OvalTrack())
-        if state and args.map and track_state(load_map(args.map)) != state["environment"]["track"]:
-            parser.error("Resume uses the saved map; --map must match that checkpoint")
+        chosen_track = (load_map(args.map) if args.map else figure_eight_bridge() if args.bridge
+                        else OvalTrack())
+        track = restore_track(state["environment"]["track"]) if state else chosen_track
+        if state and (args.map or args.bridge) and track_state(chosen_track) != state["environment"]["track"]:
+            parser.error("Resume uses the saved track; --map/--bridge must match that checkpoint")
     except (ValueError, OSError, KeyError) as error:
         parser.error(str(error))
     env = RacingEnv(episode, device=device, track=track)
@@ -96,7 +102,7 @@ def main(argv=None):
     args.output.mkdir(parents=True, exist_ok=True)
     checkpoint = args.output / "checkpoint.pt"
     settings = {"preset": args.preset, "device": device, "episode": asdict(episode), "ppo": asdict(config),
-                "map": track.name if isinstance(track, MapTrack) else "oval",
+                "map": getattr(track, "name", "oval"),
                 "map_source": str(args.map) if args.map else None,
                 "additional_updates": updates, "starting_iteration": trainer.iteration,
                 "resumed_from": str(args.resume) if args.resume else None}
@@ -186,11 +192,11 @@ def evaluate(argv=None):
                 record((frame+1)/60)
             if reason:
                 break
-    diagnostics = env.sim.lidar.diagnostics()
-    if diagnostics["iteration_limit_events"]:
+    diagnostics = env.sim.lidar.diagnostics()  # None for mesh LiDAR, which cannot exhaust rays
+    if diagnostics and diagnostics["iteration_limit_events"]:
         raise RuntimeError(f"Evaluation exhausted LiDAR rays: {diagnostics}")
     metrics = {"checkpoint": str(args.checkpoint), "training_iteration": state["iteration"],
-               "map": env.track.name if isinstance(env.track, MapTrack) else "oval",
+               "map": getattr(env.track, "name", "oval"),
                "return": total_return, "lap_progress": progress, "successful_lap": reason == 2,
                "termination_reason": reason, "transitions": frame+1, "simulated_seconds": (frame+1)/60,
                "march_diagnostics": diagnostics}

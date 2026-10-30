@@ -73,7 +73,7 @@ def _score(poses: wp.array(dtype=wp.transform), motion: wp.array(dtype=wp.vec4),
            terminated: wp.array(dtype=int), truncated: wp.array(dtype=int), done: wp.array(dtype=int),
            reason: wp.array(dtype=int), finished_return: wp.array(dtype=float),
            finished_length: wp.array(dtype=int), finished_laps: wp.array(dtype=float),
-           route_arc: wp.array(dtype=wp.vec2), route_index: wp.array(dtype=int), map_mode: int, route_length: float,
+           route_arc: wp.array(dtype=wp.vec2), route_index: wp.array(dtype=int), route_mode: int, route_length: float,
            a: float, b: float, ia: float, ib: float, oa: float, ob: float,
            max_steps: int, stall_steps: int, progress_scale: float,
            collision_penalty: float, lap_bonus: float, time_penalty: float):
@@ -90,7 +90,7 @@ def _score(poses: wp.array(dtype=wp.transform), motion: wp.array(dtype=wp.vec4),
         motion[i] = wp.vec4()
         p = wp.transform_get_translation(poses[i])
     angle = wp.atan2(p[1] / b, p[0] / a)
-    if map_mode != 0:
+    if route_mode != 0:
         route_s, nearest = route_projection(p, path, route_arc, route_index[i])
         angle = 2.0 * wp.pi * route_s / route_length
         route_index[i] = nearest
@@ -101,14 +101,14 @@ def _score(poses: wp.array(dtype=wp.transform), motion: wp.array(dtype=wp.vec4),
     progress[i] += delta
     # Continuous signed local arc progress; no waypoint-quantization reward.
     metric = wp.sqrt(a * a * wp.sin(angle) ** 2.0 + b * b * wp.cos(angle) ** 2.0)
-    if map_mode != 0:
+    if route_mode != 0:
         metric = route_length / (2.0 * wp.pi)
     distance = delta * metric
     lengths[i] += 1
     stalls[i] = 0 if wp.abs(m[0]) > .05 else stalls[i] + 1
     outer = p[0] * p[0] / (oa * oa) + p[1] * p[1] / (ob * ob)
     inner = p[0] * p[0] / (ia * ia) + p[1] * p[1] / (ib * ib)
-    off_track = map_mode == 0 and (outer > 1.001 or inner < .999)
+    off_track = route_mode == 0 and (outer > 1.001 or inner < .999)
     failure = not finite or contacts[i] > 0 or off_track or stalls[i] >= stall_steps
     success = progress[i] >= 2.0 * wp.pi and not failure
     term = failure or success
@@ -156,8 +156,9 @@ def _respawn(active: wp.array(dtype=int), path: wp.array(dtype=wp.transform),
              previous: wp.array(dtype=float), progress: wp.array(dtype=float),
              lengths: wp.array(dtype=int), stalls: wp.array(dtype=int), episode_return: wp.array(dtype=float),
              episodes: wp.array(dtype=int), route_arc: wp.array(dtype=wp.vec2), route_index: wp.array(dtype=int),
-             map_mode: int, route_length: float, seed: int, a: float, b: float,
-             elevation: float, frequency: float, start_speed: float):
+             route_mode: int, route_length: float, seed: int, a: float, b: float,
+             elevation: float, frequency: float, start_speed: float,
+             layered: int, route_layers: wp.array(dtype=int), layers: wp.array(dtype=int)):
     i = wp.tid()
     if active[i] != 0:
         # Each car owns its RNG sequence. Another car's reset cannot perturb it.
@@ -166,10 +167,22 @@ def _respawn(active: wp.array(dtype=int), path: wp.array(dtype=wp.transform),
         pose = path[index]
         p = wp.transform_get_translation(pose)
         forward = wp.quat_rotate(wp.transform_get_rotation(pose), wp.vec3(1.0, 0.0, 0.0))
-        heading = wp.atan2(forward[1], forward[0]) + .1 * (2.0 * wp.randf(rng) - 1.0)
+        noise = .1 * (2.0 * wp.randf(rng) - 1.0)
+        heading = wp.atan2(forward[1], forward[0]) + noise
         pose = wp.transform(p, road_rotation(heading, road_gradient(p[0], elevation, frequency)))
         velocity = wp.spatial_vector(wp.vec3(start_speed * wp.cos(heading), start_speed * wp.sin(heading),
             start_speed * wp.cos(heading) * road_gradient(p[0], elevation, frequency)), wp.vec3())
+        if layered != 0:
+            # Path poses are already tilted to their layer's surface (ramps
+            # included): yaw about the surface normal and start on that layer.
+            rotation = wp.transform_get_rotation(path[index]) * wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), noise)
+            forward = wp.quat_rotate(rotation, wp.vec3(1.0, 0.0, 0.0))
+            heading = wp.atan2(forward[1], forward[0])
+            slope = forward[2] / wp.length(wp.vec2(forward[0], forward[1]))
+            pose = wp.transform(p, rotation)
+            velocity = wp.spatial_vector(wp.vec3(start_speed * wp.cos(heading), start_speed * wp.sin(heading),
+                                                 start_speed * slope), wp.vec3())
+            layers[i] = route_layers[index]
         poses[i] = pose
         next_poses[i] = pose
         velocities[i] = velocity
@@ -180,7 +193,7 @@ def _respawn(active: wp.array(dtype=int), path: wp.array(dtype=wp.transform),
         contacts[i] = 0
         collision[i] = 0
         previous[i] = wp.atan2(p[1] / b, p[0] / a)
-        if map_mode != 0:
+        if route_mode != 0:
             previous[i] = 2.0 * wp.pi * route_arc[index][0] / route_length
             route_index[i] = index
         progress[i] = 0.0
@@ -195,7 +208,7 @@ def _observations(ranges: wp.array2d(dtype=float), valid: wp.array2d(dtype=int),
                   poses: wp.array(dtype=wp.transform), motion: wp.array(dtype=wp.vec4),
                   controls: wp.array(dtype=wp.vec3), observations: wp.array2d(dtype=float),
                   beams: int, lidar_scale: float, speed_scale: float, steering_max: float,
-                  elevation: float, frequency: float):
+                  elevation: float, frequency: float, layered: int):
     i, j = wp.tid()
     value = float(1.0)
     if j < beams:
@@ -217,6 +230,14 @@ def _observations(ranges: wp.array2d(dtype=float), valid: wp.array2d(dtype=int),
             value = grade * wp.cos(m[3]) / .2
             if k == 5:
                 value = -grade * wp.sin(m[3]) / .2
+            if layered != 0:
+                # Same features from the chassis frame: surface slope along its
+                # forward (k=4) and left (k=5) axes.
+                axis = wp.vec3(1.0, 0.0, 0.0)
+                if k == 5:
+                    axis = wp.vec3(0.0, 1.0, 0.0)
+                d = wp.quat_rotate(wp.transform_get_rotation(poses[i]), axis)
+                value = d[2] / wp.max(wp.length(wp.vec2(d[0], d[1])), 1.0e-6) / .2
         value = wp.clamp(value, -5.0, 5.0)
     if not wp.isfinite(value):
         value = 0.0
@@ -235,11 +256,12 @@ class RacingEnv:
     def __init__(self, config=None, *, device=None, track=None, backend="graph", auto_reset=True):
         self.config = config or EpisodeConfig()
         self.track = track or OvalTrack()
-        if isinstance(self.track, LayeredTrack):
-            raise ValueError("PPO does not support layered tracks yet; use the oval or a PNG map")
-        self.map_mode = isinstance(self.track, MapTrack)
-        self.route_length = self.track.route_length if self.map_mode else 1.0
-        self.axes = ((1., 1., 1., 1., 1., 1.) if self.map_mode else
+        # PNG maps and layered tracks score progress along their route; the oval
+        # uses its analytic ellipse. Layered decks overhang, so they need mesh LiDAR.
+        self.layered = isinstance(self.track, LayeredTrack)
+        self.route_mode = isinstance(self.track, MapTrack) or self.layered
+        self.route_length = self.track.route_length if self.route_mode else 1.0
+        self.axes = ((1., 1., 1., 1., 1., 1.) if self.route_mode else
                      (*self.track.center_axes, *self.track.inner_axes, self.track.length/2, self.track.width/2))
         if backend not in ("graph", "eager"):
             raise ValueError("backend must be graph or eager")
@@ -256,14 +278,19 @@ class RacingEnv:
         self._capture_stream = None
         with self._scope():
             self.sim = Simulation(track=self.track, scenario="drive", engine="lean", device=self.device,
-                                  num_envs=self.num_envs, lidar=LidarConfig(backend="grid", frequency=60))
+                                  num_envs=self.num_envs,
+                                  lidar=LidarConfig(backend="mesh" if self.layered else "grid", frequency=60))
             height = self.sim.drive.ride_height(self.sim.vehicle)
-            path = self.track.path(height) if self.map_mode else _centerline_path(self.track, height)
+            path = self.track.path(height) if self.route_mode else _centerline_path(self.track, height)
             self.path = wp.array(path, dtype=wp.transform, device=self.device)
-            arc = (np.column_stack((self.track.arc, self.track.segment_lengths)) if self.map_mode
+            arc = (np.column_stack((self.track.arc, self.track.segment_lengths)) if self.route_mode
                    else np.zeros((1, 2), np.float32))
             self.route_arc = wp.array(arc, dtype=wp.vec2, device=self.device)
             self.route_index = wp.zeros(self.num_envs, dtype=int, device=self.device)
+            # Placeholders keep one respawn kernel signature for unlayered tracks.
+            self.route_layers = wp.array(self.track.route_layers if self.layered else np.zeros(1, np.int32),
+                                         dtype=int, device=self.device)
+            self.layers = self.sim.layers if self.layered else wp.zeros(1, dtype=int, device=self.device)
             self.actions_w = wp.zeros((self.num_envs, 2), dtype=float, device=self.device)
             self.obs_w = wp.zeros((self.num_envs, self.obs_dim), dtype=float, device=self.device)
             self.final_obs_w = wp.zeros_like(self.obs_w)
@@ -323,14 +350,17 @@ class RacingEnv:
             s.state.body_q, s.state.body_qd, s.next_state.body_q, s.next_state.body_qd,
             s.lean_motion, s.applied_controls, s.device_commands, s.wall_contact_substeps, s.collision,
             b["previous"], b["progress"], b["lengths"], b["stalls"], b["episode_return"], b["episodes"],
-            self.route_arc, self.route_index, int(self.map_mode), self.route_length,
-            c.seed, *self.axes[:2], self.track.elevation, self.track.frequency, c.start_speed], device=self.device)
+            self.route_arc, self.route_index, int(self.route_mode), self.route_length,
+            c.seed, *self.axes[:2], self.track.elevation, self.track.frequency, c.start_speed,
+            int(self.layered), self.route_layers, self.layers], device=self.device)
 
     def _observe(self, output):
         s, c = self.sim, self.config
-        wp.launch(_observations, dim=output.shape, inputs=[s.lidar.sensor.values, s.lidar.sensor.valid,
+        scan = s.lidar.result
+        wp.launch(_observations, dim=output.shape, inputs=[scan.values, scan.valid,
             s.state.body_q, s.lean_motion, s.applied_controls, output, 108, c.lidar_scale, c.max_speed,
-            s.drive.max_steering, self.track.elevation, self.track.frequency], device=self.device)
+            s.drive.max_steering, self.track.elevation, self.track.frequency, int(self.layered)],
+            device=self.device)
 
     def _operations(self):
         s, c, b = self.sim, self.config, self.buffers
@@ -341,14 +371,19 @@ class RacingEnv:
             b["previous"], b["progress"], b["lengths"], b["stalls"], b["episode_return"], b["reward"],
             b["terminated"], b["truncated"], b["done"], b["reason"], b["finished_return"],
             b["finished_length"], b["finished_laps"], self.route_arc, self.route_index,
-            int(self.map_mode), self.route_length, *self.axes, c.max_steps, c.stall_steps,
+            int(self.route_mode), self.route_length, *self.axes, c.max_steps, c.stall_steps,
             c.progress_scale, c.collision_penalty, c.lap_bonus, c.time_penalty], device=self.device)
         s.lidar.update(s.state, 0, 0.0)
         self._observe(self.final_obs_w)
         if self.auto_reset:
             self._spawn(b["done"])
-            # The second scan marches only respawned cars; surviving scans are kept.
-            s.lidar.update(s.state, 0, 0.0, active=b["done"])
+            if self.layered:
+                # Mesh LiDAR rescans every car; survivors have not moved, so
+                # their ranges come out identical.
+                s.lidar.update(s.state, 0, 0.0)
+            else:
+                # The second scan marches only respawned cars; surviving scans are kept.
+                s.lidar.update(s.state, 0, 0.0, active=b["done"])
         self._observe(self.obs_w)
 
     def reset(self):
@@ -383,8 +418,10 @@ class RacingEnv:
                   "motion": self.sim.lean_motion, "controls": self.sim.applied_controls,
                   "commands": self.sim.device_commands, "contacts": self.sim.wall_contact_substeps,
                   "collision": self.sim.collision, "obs": self.obs_w, "final_obs": self.final_obs_w}
-        if self.map_mode:
+        if self.route_mode:
             arrays["route_index"] = self.route_index
+        if self.layered:
+            arrays["layers"] = self.layers
         return {"config": asdict(self.config), "track": track_state(self.track), "steps": self.sim.steps,
                 "auto_reset": self.auto_reset,
                 "arrays": {k: wp.to_torch(v).detach().cpu().clone() for k, v in arrays.items()}}
@@ -405,6 +442,8 @@ class RacingEnv:
                     target = self.buffers[name]
                 elif name == "route_index":
                     target = self.route_index
+                elif name == "layers":
+                    target = self.layers
                 else:
                     target = {"poses": self.sim.state.body_q, "velocities": self.sim.state.body_qd,
                         "motion": self.sim.lean_motion, "controls": self.sim.applied_controls,
