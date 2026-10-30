@@ -136,13 +136,14 @@ Both that run and the slower deleted traversal backend are recorded in
 and accuracy, and use `benchmark scale` for identical moving poses and larger
 batches.
 
-Only the oval adapter is wired into `Simulation`. The underlying `DistanceField`
+`Simulation` wires grid LiDAR to the oval and to PNG maps (which require it; see
+`png-maps.md`). The underlying `DistanceField`
 accepts equally shaped `[nx, ny]` NumPy arrays for height samples and binary road/
 wall masks, with an empty outer mask border. Arrays use XY order; origin is the
 lower sample coordinate and spacing is in meters. Obstacles share one finite
-height above local ground. Overhangs, bridges and stacked surfaces need a richer
-representation. PNG loading, arbitrary-map physics and slope gravity remain
-future work; vehicle physics still follows the oval's analytic terrain.
+height above local ground, so a single field cannot represent overhangs. Layered
+tracks with bridges (`layers.md`) therefore reject grid LiDAR and use the mesh
+backend. Slope gravity remains future work in every physics path.
 
 For an advanced resolution experiment, override only what changes:
 

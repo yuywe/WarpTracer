@@ -163,6 +163,22 @@ Trial variation was under 2% and all printed unfused/eager parity checks passed.
 This pasted report validates that workload; it does not establish grid results
 or execution of every CUDA test.
 
+## Layered tracks (bridge)
+
+Checked on 2026-10-29 on Windows 11 with an RTX 4060 Laptop GPU (driver 610.88,
+CUDA Toolkit 12.9), Warp 1.17.0. Full suite: **226 passed, 1 skipped** (the CLI
+check that needs a host without CUDA). `test_layers.py` runs on both CPU and
+`cuda:0`, so the graph/unfused, eager/fused and graph/fused layered variants
+matched unfused eager on the GPU, as did the under-then-over disparity drive.
+
+`uv run warptracer demo bridge` ran 120 simulated seconds on cuda:0 (graph/fused)
+in 6.19 s, 4,652 physics steps/s including pose recording. It completed 3 laps
+with zero wall-contact substeps; 7,201 scans of 108 beams were all valid. Peak
+speed was 1.37 m/s. Recorded height spans 0.103-0.803 m, and samples within
+0.5 m of the crossing sit at both about 0.1 m and 0.8 m, so the car passed both
+under and over the 0.70 m deck. This is one default-geometry run, not a
+throughput benchmark; the native viewer was not opened.
+
 ## EDT distance-field LiDAR
 
 The old `heightfield.py` cell/tile traversal has been deleted. The `grid` backend
