@@ -19,7 +19,7 @@ DEVICES = ["cpu", pytest.param("cuda:0", marks=pytest.mark.skipif(
 
 
 def car(device="cpu", n=1, hz=60, **kwargs):
-    return Simulation(track=OvalTrack(), scenario="drive", engine="lean", device=device,
+    return Simulation(track=OvalTrack(), scenario="drive", device=device,
                       num_envs=n, lidar=LidarConfig(frequency=hz), **kwargs)
 
 
@@ -187,5 +187,3 @@ def test_oval_rejects_invalid_geometry_and_unsupported_physics():
         OvalTrack(lane_width=6)
     with pytest.raises(ValueError, match="thickness"):
         OvalTrack(barrier_thickness=3)
-    with pytest.raises(ValueError, match="lean"):
-        Simulation(track=OvalTrack(), scenario="drive", engine="newton", device="cpu")

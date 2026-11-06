@@ -47,13 +47,13 @@ the room-specific corner latch and uses a bounded lookahead to convert the
 selected ray direction to bicycle steering. It does not read a centerline or
 map. Default tests complete multiple laps at 30, 40 and 60 Hz with zero contacts.
 
-Lap counts estimate net counterclockwise angular progress from recorded poses;
-headless demos omit them. They are useful demo diagnostics, not an RL reward or
+Lap counts estimate net counterclockwise angular progress from recorded poses.
+They are useful demo diagnostics, not an RL reward or
 continuous device-side timing system.
 
-The lean tire/acceleration model remains planar. Terrain following constrains
-the chassis to the road; suspension, airborne motion and gravity along slopes
-are future physics work. Newton oval support is not implemented.
+The lean tire model remains planar. Terrain following constrains the chassis to
+the road and gravity acts along the slope (see [reference](reference.md));
+suspension and airborne motion are future physics work.
 
 ## Benchmark or customize
 
@@ -79,7 +79,7 @@ from warptracer.lidar import LidarConfig
 from warptracer.simulation import Simulation
 
 track = OvalTrack(elevation=0.2)
-sim = Simulation(track=track, scenario="drive", engine="lean",
+sim = Simulation(track=track, scenario="drive",
                  lidar=LidarConfig(frequency=60))
 ```
 

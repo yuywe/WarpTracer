@@ -129,7 +129,6 @@ def test_conservative_clearance_covers_the_entire_occupied_pixel(png_map):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_png_lidar_hits_image_wall_in_world_coordinates(png_map, device):
-    import warp as wp
     from warptracer.lidar import LidarConfig, MountedLidar
     from warptracer.lean import LeanState
     track = load_map(png_map[0])
@@ -137,7 +136,7 @@ def test_png_lidar_hits_image_wall_in_world_coordinates(png_map, device):
                            mount_position=(0, 0, .2)), device)
     state = LeanState(device)
     state.body_q.assign(np.array([[-1., 5.5, .1, 0, 0, 0, 1]], np.float32))
-    scanner.update(state, 0, 0)
+    scanner.update(state, 0)
     _, ranges, valid = scanner.snapshot()
     assert valid[0] and ranges[0] == pytest.approx(9.5, abs=.015)
     assert scanner.diagnostics()["iteration_limit_events"] == 0
@@ -147,16 +146,16 @@ def test_png_lidar_hits_image_wall_in_world_coordinates(png_map, device):
 def test_map_footprint_collision_and_fused_substep_parity(png_map, device):
     from warptracer.simulation import Simulation
     track = load_map(png_map[0])
-    a, b = [Simulation(track=track, scenario="drive", engine="lean", device=device) for _ in range(2)]
+    a, b = [Simulation(track=track, scenario="drive", device=device) for _ in range(2)]
     for sim in (a, b):
         sim.set_action(throttle=1, steering=.1)
-    a._fused_physics_steps(4)
-    for _ in range(4): b._physics_step()
+    a._integrate(4)
+    for _ in range(4): b._integrate(1)
     np.testing.assert_allclose(a.state.body_q.numpy(), b.state.body_q.numpy(), atol=1e-7)
     # Center remains in a white pixel, but the full car's collision circle hits.
     a.state.body_q.assign(np.array([[-2.3, 7, .1, 0, 0, 0, 1]], np.float32))
     a.lean_motion.assign(np.array([[1., 0, 0, 0]], np.float32))
-    a._fused_physics_steps(4)
+    a._integrate(4)
     assert a.wall_contact_substeps.numpy()[0] > 0
     assert a.lean_motion.numpy()[0, 0] == 0
 
@@ -169,13 +168,13 @@ def test_swept_collision_catches_thin_wall_between_safe_endpoints(png_map):
     np.savetxt(config.parent / "route.csv", [[-2, 6], [-1, 6], [-1, 9], [-2, 9]], delimiter=",")
     settings = json.loads(config.read_text()); settings["centerline"] = "route.csv"
     config.write_text(json.dumps(settings))
-    sim = Simulation(track=load_map(config), scenario="drive", engine="lean", device="cpu")
+    sim = Simulation(track=load_map(config), scenario="drive", device="cpu")
     initial = np.array([[2., 5.5, .1, 0, 0, 0, 1]], np.float32)
     sim.state.body_q.assign(initial)
     # Deliberately beyond supported racing speeds: a one-substep jump across
     # the wall would end in free space if only its endpoint were checked.
     sim.lean_motion.assign(np.array([[500., 0, 0, 0]], np.float32))
-    sim._physics_step()
+    sim._integrate(1)
     assert sim.wall_contact_substeps.numpy()[0] == 1
     np.testing.assert_array_equal(sim.state.body_q.numpy(), initial)
 
@@ -226,7 +225,7 @@ def test_map_graph_parity_resets_signed_progress_and_lap(png_map, device):
     assert a.tensors["progress"][0].item() == pytest.approx(.01, abs=1e-5)
     a.tensors["progress"].fill_(2*np.pi+.01)
     a.step(torch.zeros(4, 2, device=a.torch_device))
-    assert (a.tensors["reason"] == 2).all()
+    assert (a.tensors["lap_completed"] == 1).all() and (a.tensors["terminated"] == 0).all()
 
 
 def test_map_resume_preserves_route_cursor_and_selective_reset(png_map):

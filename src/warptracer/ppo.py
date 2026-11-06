@@ -161,7 +161,7 @@ class PPO:
             # masked by GAE; time-limit values remain legitimate bootstraps.
             b["next_value"][t].copy_(self.agent.value(e.final_observation))
             self.episode_stats += torch.stack([e.tensors["done"].sum(), e.tensors["finished_return"].sum(),
-                e.tensors["finished_length"].sum(), (e.tensors["reason"] == 2).sum(),
+                e.tensors["finished_length"].sum(), e.tensors["lap_completed"].sum(),
                 e.tensors["finished_laps"].sum()])
         return generalized_advantages(b["reward"], b["value"], b["next_value"], b["terminated"],
                                        b["truncated"], self.config.gamma, self.config.gae_lambda)

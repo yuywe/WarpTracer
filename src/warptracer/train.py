@@ -165,6 +165,7 @@ def evaluate(argv=None):
     lidar_poses, ranges, masks = [], [], []
     total_return, progress = 0.0, 0.0
     reason = 0
+    lap_times = []
 
     def record(timestamp):
         # Host recordings must wait for the Torch stream used by Warp kernels.
@@ -184,6 +185,8 @@ def evaluate(argv=None):
             env.step(action)
             total_return += env.tensors["reward"][0].item()
             reason = int(env.tensors["reason"][0].item())
+            if env.tensors["lap_completed"][0].item():
+                lap_times.append((frame+1)/60)
             if reason:
                 progress = env.tensors["finished_laps"][0].item()
             else:
@@ -197,8 +200,8 @@ def evaluate(argv=None):
         raise RuntimeError(f"Evaluation exhausted LiDAR rays: {diagnostics}")
     metrics = {"checkpoint": str(args.checkpoint), "training_iteration": state["iteration"],
                "map": getattr(env.track, "name", "oval"),
-               "return": total_return, "lap_progress": progress, "successful_lap": reason == 2,
-               "termination_reason": reason, "transitions": frame+1, "simulated_seconds": (frame+1)/60,
+               "return": total_return, "lap_progress": progress, "successful_lap": bool(lap_times),
+               "completed_laps": len(lap_times), "lap_times": lap_times, "termination_reason": reason, "transitions": frame+1, "simulated_seconds": (frame+1)/60,
                "march_diagnostics": diagnostics}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.with_suffix(".json").write_text(json.dumps(metrics, indent=2) + "\n")

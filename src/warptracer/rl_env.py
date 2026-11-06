@@ -5,12 +5,12 @@ retaining them across step(). CUDA work follows the current PyTorch stream.
 """
 from contextlib import contextmanager
 from dataclasses import dataclass, asdict
+from functools import lru_cache
 
 import numpy as np
 import torch
 import warp as wp
 
-from .execution import _centerline_path
 from .lidar import LidarConfig
 from .simulation import Simulation
 from .terrain import OvalTrack, road_rotation, road_gradient
@@ -19,6 +19,15 @@ from .layers import LayeredTrack
 from .map_kernels import route_projection
 
 wp.set_module_options({"enable_backward": False})
+
+
+@lru_cache(maxsize=8)
+def _centerline_path(track, ride_height):
+    """Shared host preprocessing; upload one compact loop, never frames x cars."""
+    poses = np.array([track.pose(a, ride_height) for a in
+                      np.linspace(-np.pi / 2, 3 * np.pi / 2, 4096, endpoint=False)])
+    poses.flags.writeable = False
+    return poses
 
 
 @dataclass(frozen=True)
@@ -73,6 +82,7 @@ def _score(poses: wp.array(dtype=wp.transform), motion: wp.array(dtype=wp.vec4),
            terminated: wp.array(dtype=int), truncated: wp.array(dtype=int), done: wp.array(dtype=int),
            reason: wp.array(dtype=int), finished_return: wp.array(dtype=float),
            finished_length: wp.array(dtype=int), finished_laps: wp.array(dtype=float),
+           laps: wp.array(dtype=int), lap_completed: wp.array(dtype=int),
            route_arc: wp.array(dtype=wp.vec2), route_index: wp.array(dtype=int), route_mode: int, route_length: float,
            a: float, b: float, ia: float, ib: float, oa: float, ob: float,
            max_steps: int, stall_steps: int, progress_scale: float,
@@ -110,20 +120,23 @@ def _score(poses: wp.array(dtype=wp.transform), motion: wp.array(dtype=wp.vec4),
     inner = p[0] * p[0] / (ia * ia) + p[1] * p[1] / (ib * ib)
     off_track = route_mode == 0 and (outer > 1.001 or inner < .999)
     failure = not finite or contacts[i] > 0 or off_track or stalls[i] >= stall_steps
-    success = progress[i] >= 2.0 * wp.pi and not failure
-    term = failure or success
-    timeout = lengths[i] >= max_steps and not term
+    # Laps pay once each: re-crossing a line after rolling back earns nothing new.
+    lap = progress[i] >= 2.0 * wp.pi * float(laps[i] + 1) and not failure
+    timeout = lengths[i] >= max_steps and not failure
     r = progress_scale * distance - time_penalty / 60.0
     if failure:
         r = -collision_penalty
-    elif success:
+    elif lap:
         r += lap_bonus
+        laps[i] += 1
+    lap_completed[i] = int(lap)
     rewards[i] = r
     episode_return[i] += r
-    terminated[i] = int(term)
+    terminated[i] = int(failure)
     truncated[i] = int(timeout)
-    done[i] = int(term or timeout)
-    # 1 collision/off-track, 2 lap, 3 time limit, 4 stall, 5 nonfinite state.
+    done[i] = int(failure or timeout)
+    # 1 collision/off-track, 3 time limit, 4 stall, 5 nonfinite state. Laps do
+    # not end episodes, so 2 is unused and any nonzero code means the episode ended.
     code = int(0)
     if failure:
         code = 1
@@ -131,15 +144,13 @@ def _score(poses: wp.array(dtype=wp.transform), motion: wp.array(dtype=wp.vec4),
             code = 4
         if not finite:
             code = 5
-    elif success:
-        code = 2
     elif timeout:
         code = 3
     reason[i] = code
     finished_return[i] = 0.0
     finished_length[i] = 0
     finished_laps[i] = 0.0
-    if term or timeout:
+    if failure or timeout:
         finished_return[i] = episode_return[i]
         finished_length[i] = lengths[i]
         finished_laps[i] = progress[i] / (2.0 * wp.pi)
@@ -150,12 +161,12 @@ def _score(poses: wp.array(dtype=wp.transform), motion: wp.array(dtype=wp.vec4),
 @wp.kernel
 def _respawn(active: wp.array(dtype=int), path: wp.array(dtype=wp.transform),
              poses: wp.array(dtype=wp.transform), velocities: wp.array(dtype=wp.spatial_vector),
-             next_poses: wp.array(dtype=wp.transform), next_velocities: wp.array(dtype=wp.spatial_vector),
              motion: wp.array(dtype=wp.vec4), controls: wp.array(dtype=wp.vec3),
              commands: wp.array(dtype=wp.vec4), contacts: wp.array(dtype=int), collision: wp.array(dtype=int),
              previous: wp.array(dtype=float), progress: wp.array(dtype=float),
              lengths: wp.array(dtype=int), stalls: wp.array(dtype=int), episode_return: wp.array(dtype=float),
-             episodes: wp.array(dtype=int), route_arc: wp.array(dtype=wp.vec2), route_index: wp.array(dtype=int),
+             episodes: wp.array(dtype=int), laps: wp.array(dtype=int),
+             route_arc: wp.array(dtype=wp.vec2), route_index: wp.array(dtype=int),
              route_mode: int, route_length: float, seed: int, a: float, b: float,
              elevation: float, frequency: float, start_speed: float,
              layered: int, route_layers: wp.array(dtype=int), layers: wp.array(dtype=int)):
@@ -184,9 +195,7 @@ def _respawn(active: wp.array(dtype=int), path: wp.array(dtype=wp.transform),
                                                  start_speed * slope), wp.vec3())
             layers[i] = route_layers[index]
         poses[i] = pose
-        next_poses[i] = pose
         velocities[i] = velocity
-        next_velocities[i] = velocity
         motion[i] = wp.vec4(start_speed, 0.0, 0.0, heading)
         controls[i] = wp.vec3()
         commands[i] = wp.vec4(0.0, 0.0, 0.0, -1.0)
@@ -197,6 +206,7 @@ def _respawn(active: wp.array(dtype=int), path: wp.array(dtype=wp.transform),
             previous[i] = 2.0 * wp.pi * route_arc[index][0] / route_length
             route_index[i] = index
         progress[i] = 0.0
+        laps[i] = 0
         lengths[i] = 0
         stalls[i] = 0
         episode_return[i] = 0.0
@@ -277,7 +287,7 @@ class RacingEnv:
         self.graph = None
         self._capture_stream = None
         with self._scope():
-            self.sim = Simulation(track=self.track, scenario="drive", engine="lean", device=self.device,
+            self.sim = Simulation(track=self.track, scenario="drive", device=self.device,
                                   num_envs=self.num_envs,
                                   lidar=LidarConfig(backend="mesh" if self.layered else "grid", frequency=60))
             height = self.sim.drive.ride_height(self.sim.vehicle)
@@ -297,7 +307,8 @@ class RacingEnv:
             self.buffers = {}
             for name in ("previous", "progress", "episode_return", "reward", "finished_return", "finished_laps"):
                 self.buffers[name] = wp.zeros(self.num_envs, dtype=float, device=self.device)
-            for name in ("lengths", "stalls", "episodes", "terminated", "truncated", "done", "reason", "finished_length"):
+            for name in ("lengths", "stalls", "episodes", "terminated", "truncated", "done", "reason", "finished_length",
+                         "laps", "lap_completed"):
                 self.buffers[name] = wp.zeros(self.num_envs, dtype=int, device=self.device)
             self.all_active = wp.ones(self.num_envs, dtype=int, device=self.device)
             self.actions = wp.to_torch(self.actions_w)
@@ -347,9 +358,9 @@ class RacingEnv:
     def _spawn(self, active):
         s, c, b = self.sim, self.config, self.buffers
         wp.launch(_respawn, dim=self.num_envs, inputs=[active, self.path,
-            s.state.body_q, s.state.body_qd, s.next_state.body_q, s.next_state.body_qd,
+            s.state.body_q, s.state.body_qd,
             s.lean_motion, s.applied_controls, s.device_commands, s.wall_contact_substeps, s.collision,
-            b["previous"], b["progress"], b["lengths"], b["stalls"], b["episode_return"], b["episodes"],
+            b["previous"], b["progress"], b["lengths"], b["stalls"], b["episode_return"], b["episodes"], b["laps"],
             self.route_arc, self.route_index, int(self.route_mode), self.route_length,
             c.seed, *self.axes[:2], self.track.elevation, self.track.frequency, c.start_speed,
             int(self.layered), self.route_layers, self.layers], device=self.device)
@@ -366,24 +377,24 @@ class RacingEnv:
         s, c, b = self.sim, self.config, self.buffers
         wp.launch(_commands, dim=self.num_envs, inputs=[self.actions_w, s.device_commands,
                   s.wall_contact_substeps, s.lean_motion, s.drive.max_steering, c.max_speed], device=self.device)
-        s._fused_physics_steps(4)
+        s._integrate(4)
         wp.launch(_score, dim=self.num_envs, inputs=[s.state.body_q, s.lean_motion, self.path, s.wall_contact_substeps,
             b["previous"], b["progress"], b["lengths"], b["stalls"], b["episode_return"], b["reward"],
             b["terminated"], b["truncated"], b["done"], b["reason"], b["finished_return"],
-            b["finished_length"], b["finished_laps"], self.route_arc, self.route_index,
+            b["finished_length"], b["finished_laps"], b["laps"], b["lap_completed"], self.route_arc, self.route_index,
             int(self.route_mode), self.route_length, *self.axes, c.max_steps, c.stall_steps,
             c.progress_scale, c.collision_penalty, c.lap_bonus, c.time_penalty], device=self.device)
-        s.lidar.update(s.state, 0, 0.0)
+        s.lidar.update(s.state, 0.0)
         self._observe(self.final_obs_w)
         if self.auto_reset:
             self._spawn(b["done"])
             if self.layered:
                 # Mesh LiDAR rescans every car; survivors have not moved, so
                 # their ranges come out identical.
-                s.lidar.update(s.state, 0, 0.0)
+                s.lidar.update(s.state, 0.0)
             else:
                 # The second scan marches only respawned cars; surviving scans are kept.
-                s.lidar.update(s.state, 0, 0.0, active=b["done"])
+                s.lidar.update(s.state, 0.0, active=b["done"])
         self._observe(self.obs_w)
 
     def reset(self):
@@ -394,7 +405,7 @@ class RacingEnv:
             self.route_index.zero_()
             self._spawn(self.all_active)
             self.sim.lidar.reset_statistics()
-            self.sim.lidar.update(self.sim.state, 0, 0.0)
+            self.sim.lidar.update(self.sim.state, 0.0)
             self._observe(self.obs_w)
             wp.copy(self.final_obs_w, self.obs_w)
             self.sim.steps = 0
@@ -450,8 +461,6 @@ class RacingEnv:
                         "commands": self.sim.device_commands, "contacts": self.sim.wall_contact_substeps,
                         "collision": self.sim.collision, "obs": self.obs_w, "final_obs": self.final_obs_w}[name]
                 wp.to_torch(target).copy_(tensor.to(self.torch_device))
-            wp.copy(self.sim.next_state.body_q, self.sim.state.body_q)
-            wp.copy(self.sim.next_state.body_qd, self.sim.state.body_qd)
             self.sim.lidar.reset_statistics()
-            self.sim.lidar.update(self.sim.state, 0, 0.0)
+            self.sim.lidar.update(self.sim.state, 0.0)
         self.sim.steps = state["steps"]

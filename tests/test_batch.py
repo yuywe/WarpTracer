@@ -14,7 +14,7 @@ DEVICES = ["cpu", pytest.param("cuda:0", marks=pytest.mark.skipif(
 
 
 def runner(n, integrator, backend, substeps, device):
-    return TransitionRunner(Simulation(scenario="drive", engine="lean", device=device,
+    return TransitionRunner(Simulation(scenario="drive", device=device,
         num_envs=n, track=Track(length=4, width=4),
         lidar=LidarConfig(beams=27, frequency=240 // substeps)),
         integrator=integrator, backend=backend, substeps=substeps)
@@ -99,26 +99,22 @@ def test_sweep_units_and_40hz_headless(tmp_path):
     assert len(data["results"]) == 4 and len(data["validation"]) == 4
     for result in data["results"]:
         summary, n = result["summary"], result["environments"]
-        assert summary["median_environment_transitions_per_second"] == pytest.approx(
+        assert summary["median_aggregate_environment_transitions_per_second"] == pytest.approx(
             n * summary["median_batch_transitions_per_second"])
         assert summary["median_physics_substeps_per_second"] == pytest.approx(
-            6 * summary["median_environment_transitions_per_second"])
+            6 * summary["median_aggregate_environment_transitions_per_second"])
         assert result["trials"][0]["checked_environments"] == n
 
 
-def test_invalid_batch_and_newton_fusion():
-    with pytest.raises(ValueError, match="Batched"):
-        Simulation(scenario="drive", device="cpu", num_envs=2)
+def test_invalid_batches():
     with pytest.raises(ValueError, match="positive"):
-        Simulation(scenario="drive", device="cpu", engine="lean", num_envs=0)
+        Simulation(scenario="drive", device="cpu", num_envs=0)
     r = runner(3, "fused", "eager", 4, "cpu")
     for commands in ([[0, 0, 0, 1]], [[0, 0, 0, -2]] * 3, [[0, 0, 0, np.nan]] * 3):
         with pytest.raises(ValueError):
             r.sim.set_commands(commands)
     with pytest.raises(ValueError, match="one car"):
         r.sim.run(.1)
-    with pytest.raises(ValueError, match="lean"):
-        TransitionRunner(Simulation(scenario="drive", device="cpu"), integrator="fused")
 
 
 @pytest.mark.parametrize("device", DEVICES)

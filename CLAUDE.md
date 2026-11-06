@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-WarpTracer is a minimal GPU-accelerated racing simulator built on NVIDIA Warp
-(and optionally Newton physics): a box car with vehicle-mounted LiDAR, driving in
-a flat room or on an elevated oval track, navigated by a reactive disparity-extender
-controller (or a PPO policy trained on the oval or a PNG occupancy map). Replays
+WarpTracer is a minimal GPU-accelerated racing simulator built on NVIDIA Warp:
+a box car with vehicle-mounted LiDAR, driving in a flat room, on an elevated oval, a
+PNG occupancy map or a two-layer figure eight, navigated by a reactive
+disparity-extender controller or a PPO policy. Replays
 use Warp's native OpenGL viewer or an offscreen MP4. Active work is on the
 `performance-prototype` branch (not `main`).
 
@@ -25,7 +25,7 @@ uv run warptracer demo oval --follow        # top-down camera tracking the car (
 uv run warptracer demo --seconds 60         # override one setting; see --help for the rest
 uv run warptracer demo bridge               # two-layer figure eight: under, then over a 0.7 m bridge
 uv run warptracer demo --help               # scenarios: oval, oval-grid, bridge, disparity, accelerate-brake,
-                                            #   circle, s-turn, drop, wall-impact
+                                            #   circle, s-turn
 
 uv run warptracer view outputs/oval.npz     # reopen a recording (add --video to render an MP4 instead)
 
@@ -40,6 +40,7 @@ uv run warptracer benchmark navigation      # LiDAR vs. disparity-control throug
 uv run warptracer benchmark oval            # navigation on the elevated oval; requires CUDA
 uv run warptracer benchmark batches         # independent-car scaling; requires CUDA
 uv run warptracer benchmark fusion          # fused vs. unfused physics; requires CUDA
+uv run warptracer benchmark grid            # mesh vs. EDT LiDAR on the oval; requires CUDA
 uv run warptracer benchmark --help
 
 uv run --extra dev pytest -q                # run the full test suite
@@ -47,36 +48,29 @@ uv run --extra dev pytest tests/test_disparity.py -q         # single test file
 uv run --extra dev pytest tests/test_disparity.py::test_name -q  # single test
 ```
 
-The `oval`, `navigation`, `batches`, and `fusion` presets fail immediately without
+The `oval`, `navigation`, `grid`, `batches`, and `fusion` presets fail immediately without
 a CUDA GPU; only `quick` (default) runs on CPU. First run compiles Warp kernels.
 Without `--view`/`--video`, demos and evaluation only save the recording; no
 graphics context is created. The viewer needs an NVIDIA CUDA driver and an
 OpenGL context (Warp 1.17 allocates CUDA pinned memory even in its fallback), so
 it can't run on a CPU-only host, though simulating and recording still work there.
-Older module-level entry points (`warptracer-demo`, `python -m warptracer.*`) still
-work for lower-level/custom experiments.
 
 ## Architecture
 
-**Engines.** `Simulation` (`simulation.py`) supports two physics backends, selected
-via `engine=`:
-- `"lean"` — a custom planar bicycle model (`lean.py`) running as hand-written Warp
-  kernels. Supports batched, independent cars (`num_envs=N`), the elevated oval
-  (terrain-following height/tilt), and fused multi-substep kernels for graph capture.
-  This is the actively developed path and what the CLI demos/benchmarks use.
-- `"newton"` — the original six-DOF rigid-body model using the `newton` physics
-  library (`scene.py:build_model`, XPBD solver). Room-only, single car, kept for
-  compatibility/baseline comparisons. `Simulation`'s Python default is still
-  `engine="newton"` for backward compatibility, but CLI demos default to `"lean"`.
+**Physics.** `Simulation` (`simulation.py`) runs a custom planar bicycle model
+(`lean.py`) as hand-written Warp kernels, supporting batched, independent cars
+(`num_envs=N`), terrain-following height/tilt and slope gravity. `bicycle_step` is the
+one integrator; `integrate_bicycle` (room/oval), `integrate_map` (`map_kernels.py`)
+and `integrate_layers` (`layer_kernels.py`) wrap it with track-specific collision.
+All read their constants from the `BicycleParams` struct and advance state in place.
 
 **Execution model.** `TransitionRunner` (`execution.py`) owns stepping once created
 — don't interleave `sim.step()`/`sim.reset()` with an active runner. A "transition"
-is a fixed bundle of physics substeps (even count, required for state-buffer parity)
-plus one LiDAR scan at the end. Two independent axes combine:
+is a fixed bundle of physics substeps plus one LiDAR scan at the end. Two independent axes combine:
 - `backend`: `"eager"` (Python submits each op) vs. `"graph"` (Warp CUDA/CPU-API
   graph captured once, replayed via `wp.capture_launch`).
 - `integrator`: `"unfused"` (one kernel launch per substep) vs. `"fused"` (all
-  substeps of a transition in one kernel; lean physics only).
+  substeps of a transition in one kernel).
 Every fused/graph variant is validated bit-for-bit (within tolerance) against
 unfused eager execution before being trusted for timing — see
 `benchmark.py:validate_pair`.
@@ -84,8 +78,7 @@ unfused eager execution before being trusted for timing — see
 **Driving stack.** `scene.py` holds static geometry (`Track`, `Vehicle` dataclasses);
 `terrain.py` (`OvalTrack`) extends `Track` with the elevated-loop analytic surface
 shared by physics and the LiDAR/playback mesh; `driving.py` holds `DriveConfig`
-(tire/steering force parameters) and scripted driving scenarios; `lean.py` has the
-bicycle integration kernels (`integrate_bicycle`, `integrate_bicycle_fused`).
+(tire/steering force parameters) and scripted driving scenarios.
 Coordinates are Z-up, X-forward, Y-left; poses are `x,y,z,qx,qy,qz,qw`.
 
 **Sensing.** `lidar.py` (`MountedLidar`, `LidarConfig`) adapts the vendored ray
@@ -103,7 +96,7 @@ selected ray to a bounded-lookahead bicycle steering angle). This is a prototype
 heuristic controller, not a collision guarantee or a trained policy — no map,
 localization, RL, or reversing/recovery behavior.
 
-**Batches.** `num_envs=N` with `engine="lean"` runs N fully independent cars
+**Batches.** `num_envs=N` runs N fully independent cars
 (shared static track geometry, separate everything else — state, scans, controller
 state). Cars cannot see or collide with each other. Single-car code (`num_envs=1`)
 is the N=1 special case of the same APIs.
@@ -144,8 +137,8 @@ duration combinations so adding a new benchmark preset is a dict entry plus
 ## Working in this codebase
 
 - Units throughout are meters, kilograms, seconds, radians.
-- When changing lean physics, tire forces, or terrain, re-run the relevant
-  parity/validation tests (`test_lean.py`, `test_oval.py`, `test_physics.py`,
+- When changing physics, tire forces, or terrain, re-run the relevant
+  parity/validation tests (`test_lean.py`, `test_oval.py`, `test_slope_gravity.py`,
   `test_benchmark.py`'s `validate_pair` path) — fused/graph paths are only trusted
   because they're checked against unfused eager execution.
 - `docs/` has the authoritative behavioral detail for vehicle/sensor parameters

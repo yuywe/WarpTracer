@@ -13,7 +13,7 @@ DEVICES = ["cpu", pytest.param("cuda:0", marks=pytest.mark.skipif(
 
 
 def car(n=1, device="cpu", hz=60):
-    return Simulation(scenario="drive", engine="lean", device=device, num_envs=n,
+    return Simulation(scenario="drive", device=device, num_envs=n,
                       lidar=LidarConfig(frequency=hz))
 
 
@@ -113,9 +113,9 @@ def test_brakes_before_front_wall_and_contact_counter_resets():
 
 def test_unsupported_sensor_and_parameters_rejected():
     with pytest.raises(ValueError, match="LiDAR"):
-        DisparityController(Simulation(scenario="drive", engine="lean", device="cpu"))
+        DisparityController(Simulation(scenario="drive", device="cpu"))
     with pytest.raises(ValueError, match="unrotated"):
-        DisparityController(Simulation(scenario="drive", engine="lean", device="cpu",
+        DisparityController(Simulation(scenario="drive", device="cpu",
                                        lidar=LidarConfig(mount_rpy=(0, 0, .2))))
     with pytest.raises(ValueError):
         DisparityConfig(max_speed=float("nan"))

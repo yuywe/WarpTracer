@@ -303,17 +303,6 @@ wheels = [
 ]
 
 [[package]]
-name = "newton"
-version = "1.6.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "warp-lang" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7b/d0/1955c2623762fd1d9f3bc0bb9866b6c0669e1e277202bdc16772520d7da1/newton-1.6.0-py3-none-any.whl", hash = "sha256:5eedebe17d7261ca39e8f97c2f2f20e22e7264d0aed01782f3cb1dd60180b872", size = 6159741, upload-time = "2026-09-10T13:50:10.666Z" },
-]
-
-[[package]]
 name = "numpy"
 version = "2.2.6"
 source = { registry = "https://pypi.org/simple" }
@@ -1393,7 +1382,6 @@ source = { editable = "." }
 dependencies = [
     { name = "imageio" },
     { name = "imageio-ffmpeg" },
-    { name = "newton" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -1418,7 +1406,6 @@ dev = [
 requires-dist = [
     { name = "imageio", specifier = ">=2.34" },
     { name = "imageio-ffmpeg", specifier = ">=0.5" },
-    { name = "newton", specifier = "==1.6.0" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "pillow", specifier = ">=10" },
     { name = "pyglet", specifier = ">=2.0,<3" },

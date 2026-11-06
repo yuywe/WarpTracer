@@ -1,6 +1,6 @@
 """Flat map collision and continuous route projection on the device."""
 import warp as wp
-from .lean import bicycle_step
+from .lean import BicycleParams, bicycle_step
 
 wp.set_module_options({"enable_backward": False})
 
@@ -22,9 +22,7 @@ def integrate_map(poses: wp.array(dtype=wp.transform), motion: wp.array(dtype=wp
                   commands: wp.array(dtype=wp.vec4), controls: wp.array(dtype=wp.vec3),
                   collision: wp.array(dtype=int), velocities: wp.array(dtype=wp.spatial_vector),
                   contacts: wp.array(dtype=int), grid: wp.array2d(dtype=float), origin: wp.vec2, cell: float,
-                  dt: float, mass: float, length: float, width: float, wheelbase: float,
-                  friction: float, stiffness: float, drag: float, max_acceleration: float,
-                  max_braking: float, steering_rate: float, speed_gain: float, substeps: int):
+                  params: BicycleParams, substeps: int):
     i = wp.tid()
     pose = poses[i]
     state = motion[i]
@@ -33,12 +31,10 @@ def integrate_map(poses: wp.array(dtype=wp.transform), motion: wp.array(dtype=wp
     velocity = wp.spatial_vector()
     hit = int(0)
     count = int(0)
-    radius = .5 * wp.sqrt(length * length + width * width)
+    radius = .5 * wp.sqrt(params.length * params.length + params.width * params.width)
     for _ in range(substeps):
         next_pose, state, control, velocity, unused = bicycle_step(
-            pose, state, command, control, dt, mass, length, width, wheelbase,
-            friction, stiffness, drag, max_acceleration, max_braking, steering_rate, speed_gain,
-            0.0, 0.0, 2, wp.vec4(), 0.0)
+            pose, state, command, control, params, 0.0, 0.0, 2, wp.vec4(), 0.0)
         a, b = wp.transform_get_translation(pose), wp.transform_get_translation(next_pose)
         hit = 0
         if wp.isfinite(b[0]) and wp.isfinite(b[1]):

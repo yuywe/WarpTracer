@@ -6,3 +6,5 @@ __pycache__/
 build/
 dist/
 outputs/
+# Separate local checkout; the vendored package is src/racesense3d.
+/racesense3d/

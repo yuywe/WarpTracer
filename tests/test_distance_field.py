@@ -5,14 +5,14 @@ import numpy as np
 import pytest
 import warp as wp
 
+from racesense3d.core import Scene
 from racesense3d.sensors import Rays
 from warptracer.benchmark import validate_pair
 from warptracer.execution import TransitionRunner
 from warptracer.distance_field import GridScene, DistanceField, _signed_distance, _gradient_bound
 from warptracer.lidar import LidarConfig
 from warptracer.simulation import Simulation
-from warptracer.terrain import OvalTrack
-from warptracer.lidar_comparison import oval_scan_comparison
+from warptracer.terrain import OvalTrack, road_rotation
 
 
 def rays(directions):
@@ -122,13 +122,12 @@ def test_iteration_budget_is_reported_separately_and_resets_without_rebuild():
 
 def test_benchmark_rejects_exhausted_scans():
     from warptracer.benchmark import trial
-    from warptracer.execution import ScanRunner
-    sim = Simulation(track=OvalTrack(), scenario="drive", engine="lean", device="cpu",
+    sim = Simulation(track=OvalTrack(), scenario="drive", device="cpu",
                      lidar=LidarConfig(backend="grid", frequency=60))
     sim.lidar.sensor.max_steps = 1
-    runner = ScanRunner(sim, backend="graph", integrator="fused")
+    runner = TransitionRunner(sim, backend="graph", integrator="fused")
     with pytest.raises(RuntimeError, match="exhausted the march budget"):
-        trial(runner, "scan", transitions=6, warmup=6, record_hz=30, warmup_wall_seconds=0)
+        trial(runner, "lidar", transitions=6, warmup=6, record_hz=30, warmup_wall_seconds=0)
 
 
 def test_3d_rays_against_independent_sloped_mesh_and_rectangular_obstacle():
@@ -169,21 +168,36 @@ def test_3d_rays_against_independent_sloped_mesh_and_rectangular_obstacle():
     assert grid.diagnostics()["iteration_limit_events"] == 0
 
 
-def test_oval_same_pose_comparison_measures_discretization_and_outliers():
-    report = oval_scan_comparison(OvalTrack(), "cpu")
-    assert report["sensor_poses"] == 432 and report["rays"] == 432 * 108
-    assert report["valid_mismatch_fraction"] < .002
-    assert report["absolute_range_error_m"]["p99"] < .05
-    assert report["common_hits_within_5cm_fraction"] > .99
-    assert report["common_hit_errors_over_1m"] > 0
-    assert report["absolute_range_error_m"]["max"] > 1
-    assert len(report["worst_common_hits"]) == 5
-    assert report["candidate_algorithm"] == "edt-sphere-tracing"
-    assert report["march_diagnostics"]["iteration_limit_events"] == 0
+def test_oval_grid_scans_agree_with_mesh_at_identical_poses():
+    # 48 positions around three lane offsets, road-aligned and pitched +/-15 degrees.
+    track = OvalTrack()
+    a, b = track.center_axes
+    mount = np.array([.12, 0, .085])
+    origins, rotations = [], []
+    for offset in (-.5, 0, .5):
+        for angle in np.linspace(-np.pi / 2, 3 * np.pi / 2, 48, endpoint=False):
+            x, y = (a + offset) * np.cos(angle), (b + offset) * np.sin(angle)
+            heading = np.arctan2(b * np.cos(angle), -a * np.sin(angle))
+            body = np.array(wp.quat_to_matrix(road_rotation(float(heading), float(track.gradient(x))))).reshape(3, 3)
+            for pitch in (0, -np.pi / 12, np.pi / 12):
+                origins.append(np.array([x, y, track.height(x) + .1]) + body @ mount)
+                rotations.append(body @ np.array(wp.quat_to_matrix(wp.quat_rpy(0., float(pitch), 0.))).reshape(3, 3))
+    origins, rotations = np.asarray(origins, np.float32), np.asarray(rotations, np.float32)
+    config = LidarConfig()
+    grid = GridScene(DistanceField.oval(track), "cpu").sensor(config.rays(), batch_size=len(origins),
+                                                               near=config.near, far=config.far)
+    mesh = Scene(*track.mesh(), device="cpu").sensor(config.rays(), batch_size=len(origins),
+                                                     near=config.near, far=config.far)
+    mesh_ranges, mesh_valid = mesh.scan(origins, rotations).numpy()
+    grid_ranges, grid_valid = grid.scan(origins, rotations).numpy()
+    assert (mesh_valid != grid_valid).mean() < .002
+    error = np.abs(mesh_ranges - grid_ranges)[mesh_valid & grid_valid]
+    assert np.percentile(error, 99) < .05 and (error <= .05).mean() > .99
+    assert grid.diagnostics()["iteration_limit_events"] == 0
 
 
 def test_grid_navigation_completes_laps_without_contacts():
-    sim = Simulation(track=OvalTrack(), scenario="drive", engine="lean", device="cpu",
+    sim = Simulation(track=OvalTrack(), scenario="drive", device="cpu",
                      lidar=LidarConfig(backend="grid", frequency=60))
     runner = TransitionRunner(sim, controller="disparity", backend="graph", integrator="fused")
     trajectory = sim.run(120, runner=runner)
@@ -208,43 +222,21 @@ def test_short_grid_commands_report_sensor_geometry_and_real_work(tmp_path):
     main(["benchmark", "grid", "--device", "cpu", "--envs", "1", "--seconds", ".1",
           "--trials", "1", "--warmup-seconds", ".1", "--warmup-wall-seconds", "0", "--output", str(output)])
     report = json.loads(output.read_text())
-    assert report["lidar_backends"] == ["mesh", "grid"] and report["scan_comparison"]["rays"] == 46656
-    assert report["schema_version"] == 5
-    assert len(report["results"]) == 4 and len(report["lidar_speedups"]) == 2
+    assert {r["lidar_backend"] for r in report["results"]} == {"mesh", "grid"}
+    assert len(report["results"]) == 2
     assert all(v["status"] == "passed" for v in report["validation"])
     for result in report["results"]:
         assert result["trials"][0]["wall_contact_substeps"] == [0]
         if result["lidar_backend"] == "grid":
             assert result["lidar_algorithm"] == "edt-sphere-tracing"
             assert result["trials"][0]["march_diagnostics"]["iteration_limit_events"] == 0
-        if result["case"] == "scan":
-            assert result["physics_substeps_per_transition"] == 0
-            assert result["summary"]["median_physics_substeps_per_second"] == 0
-            assert result["summary"]["median_simulated_seconds_per_second_per_env"] is None
-            assert result["trials"][0]["aggregate_lidar_scans_per_second"] > 0
-
-
-def test_scan_benchmark_keeps_identical_fixed_poses_for_both_backends():
-    from warptracer.benchmark import make_runner
-    poses = []
-    for backend in ("mesh", "grid"):
-        runner = make_runner("scan", "graph", "cpu", 4, num_envs=3, integrator="fused",
-                             track="oval", lidar_backend=backend)
-        before = runner.sim.snapshot()[0]
-        for _ in range(10):
-            runner.advance()
-        np.testing.assert_array_equal(before, runner.sim.snapshot()[0])
-        assert runner.sim.steps == 40
-        poses.append(runner.sim.lidar.snapshot()[0])
-    np.testing.assert_array_equal(*poses)
-    assert not np.allclose(poses[0][0], poses[0][1])
 
 
 @pytest.mark.parametrize("device", ["cpu", pytest.param("cuda:0", marks=pytest.mark.skipif(
     not wp.is_cuda_available(), reason="CUDA driver unavailable"))])
 def test_each_grid_batch_entry_matches_independent_car(device):
     def runner(angles):
-        sim = Simulation(track=OvalTrack(), scenario="drive", engine="lean", device=device,
+        sim = Simulation(track=OvalTrack(), scenario="drive", device=device,
                          num_envs=len(angles), lidar=LidarConfig(backend="grid", frequency=40))
         sim.initial_pose[:] = [sim.track.pose(a, sim.drive.ride_height(sim.vehicle)) for a in angles]
         return TransitionRunner(sim, controller="disparity", backend="graph", integrator="fused", substeps=6)
@@ -282,7 +274,7 @@ def test_grid_cuda_scan_agrees_with_cpu_for_tilted_poses():
     not wp.is_cuda_available(), reason="CUDA driver unavailable"))])
 def test_grid_batched_execution_and_reset_parity(backend, integrator, device):
     def runner(mode, integration):
-        sim = Simulation(track=OvalTrack(), scenario="drive", engine="lean", device=device,
+        sim = Simulation(track=OvalTrack(), scenario="drive", device=device,
                          num_envs=3, lidar=LidarConfig(backend="grid", frequency=60))
         sim.initial_pose[:] = [sim.track.pose(a, sim.drive.ride_height(sim.vehicle))
                               for a in (-np.pi / 2, 0, np.pi / 2)]
@@ -311,4 +303,4 @@ def test_grid_rejects_invalid_data_and_unsupported_track():
     with pytest.raises(ValueError):
         DistanceField.oval(OvalTrack(), .2)
     with pytest.raises(ValueError, match="oval"):
-        Simulation(scenario="drive", engine="lean", lidar=LidarConfig(backend="grid"))
+        Simulation(scenario="drive", lidar=LidarConfig(backend="grid"))

@@ -60,11 +60,13 @@ compressed grids instead.
 
 ## Limits
 
-- The lean model is planar: slopes tilt the chassis but gravity does not slow
-  the car on the ramp, and it never leaves the ground.
+- The lean model has slope gravity (see [reference](reference.md)), so cars slow
+  on the way up the ramp and speed up on the way down, but it never leaves the
+  ground.
 - The disparity controller is unchanged (loop mode, as on the oval). Measured on
-  the default geometry: about three laps in 120 s with zero wall contacts. Other
-  geometry needs its own navigation check.
+  the default geometry: about 125 m (two full laps) in 120 s with zero wall contacts,
+  averaging about 0.7 m/s climbing and 1.3 m/s descending. Other geometry needs its
+  own navigation check.
 - PPO trains on the figure eight with `uv run warptracer train oval --bridge`
   (see [PPO](ppo.md)); there is no CLI option yet for other layered geometry.
 - Warp 1.17's flat-shading path scrambles these meshes, so replay draws them

@@ -26,7 +26,7 @@ def track():
 
 
 def car(device="cpu", n=1):
-    return Simulation(track=figure_eight_bridge(), scenario="drive", engine="lean", device=device,
+    return Simulation(track=figure_eight_bridge(), scenario="drive", device=device,
                       num_envs=n, lidar=LidarConfig(frequency=60))
 
 
@@ -126,11 +126,9 @@ def test_short_bridge_command_exports_layered_track(tmp_path):
     assert report["completed_laps"] == 0 and report["wall_contact_substeps"] == 0
 
 
-def test_layered_track_rejects_newton_and_grid_lidar(track):
-    with pytest.raises(ValueError, match="lean"):
-        Simulation(track=track, scenario="drive", engine="newton")
+def test_layered_track_rejects_grid_lidar(track):
     with pytest.raises(ValueError, match="Grid LiDAR"):
-        Simulation(track=track, scenario="drive", engine="lean", device="cpu",
+        Simulation(track=track, scenario="drive", device="cpu",
                    lidar=LidarConfig(backend="grid"))
 
 
@@ -180,7 +178,7 @@ def test_ppo_route_progress_stays_on_the_bridge_over_the_crossing():
     top = int(np.flatnonzero(track.route_layers == 1)[np.argmin(np.linalg.norm(
         track.route[track.route_layers == 1, :2], axis=1))]) - 20
     pose = track.path(env.sim.drive.ride_height(env.sim.vehicle))[top]
-    env.sim.state.body_q.assign(pose[None]); env.sim.next_state.body_q.assign(pose[None])
+    env.sim.state.body_q.assign(pose[None])
     q = pose[3:]
     env.sim.lean_motion.assign(np.array([[1., 0., 0., np.arctan2(2 * (q[3] * q[2] + q[0] * q[1]),
                                                                   1 - 2 * (q[1] ** 2 + q[2] ** 2))]], np.float32))

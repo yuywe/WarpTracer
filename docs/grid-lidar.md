@@ -14,36 +14,18 @@ or add `--video` to the demo for Colab. This runs the same 120-second oval navig
 task with 108 beams at 60 Hz. Vehicle physics and the displayed road remain the
 same; sensing uses a rasterized approximation of the track.
 
-## Compare on Colab
-
-Select a GPU runtime, run the setup cell in the
-[benchmark notebook](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/benchmark_colab.ipynb),
-then use `preset = "grid"`. From the repository root the command is:
+## Compare with mesh
 
 ```bash
 uv run warptracer benchmark grid
 ```
 
-It writes `outputs/grid.json` and performs three checks:
-
-| Check | What it measures |
-| --- | --- |
-| Identical-pose scan comparison | Range errors, hit/miss differences and march-budget counts |
-| `scan` workload | Repeated scans at identical fixed poses, without physics or controller work |
-| `navigation` workload | Complete physics, sensing and disparity-control throughput for each backend |
-
-Timing uses 1, 64 and 256 independent cars, three trials, 100 seconds of the
-60 Hz schedule per trial, and the usual two-real-second warmup. Fixed scan poses
-are spaced around the oval; both backends see exactly the same poses. Scan trials
-do not move cars or simulate physics; their physics-substep rate is zero and
-their simulation-speed metric is null. Their aggregate transition rate is the
-number of complete per-car scans per second, not the number of individual rays.
-
-The printed **GRID/MESH** ratio is mesh median time divided by grid median time:
-above 1 means grid is faster. Navigation trajectories can differ because scans
-differ, so use the fixed-pose workload to isolate sensor performance. Every
-execution variant is separately checked against unfused/eager execution using
-the **same** sensor backend; those parity checks do not imply mesh/grid agreement.
+This writes `outputs/grid.json` with complete physics, sensing and disparity-control
+throughput for each backend, at 1, 64 and 256 independent cars. Navigation
+trajectories can differ because scans differ. Every execution variant is separately
+checked against unfused/eager execution using the **same** sensor backend; those
+parity checks do not imply mesh/grid agreement. Accuracy is tested in
+`tests/test_distance_field.py` by casting both backends from identical poses.
 
 ## How it works
 
@@ -80,21 +62,16 @@ grazing rays in the 4,096-car navigation workload exceeded the previous
 512-step limit; one reproduced ray
 converged after 587 steps. Raising the ceiling preserves the tolerance and
 conservative jumps; ordinary rays still stop immediately on convergence. Exhausted
-rays return invalid and increment a separate counter; the comparison and timed
-benchmark reject runs with exhaustion rather than accepting incomplete scans as
+rays return invalid and increment a separate counter; the timed benchmark and PPO
+reject runs with exhaustion rather than accepting incomplete scans as
 ordinary misses. `march_diagnostics` records tolerance, budget, observed maximum
 iterations and exhaustion counts. Counts are kept on the device and copied only
 for explicit inspection after timing. Warmup/reset scans are excluded from trial
 counts; demo counts include its initial scan.
 
-Optional sampling caches retain the four grid values for one ray until it leaves
-its current bilinear patch. Fresh interpolation preserves the same implicit
-surfaces and convergence tolerance. Default scans remain uncached pending GPU
-measurements; `benchmark scale` tests both variants alongside the mesh baseline.
-
 Device scan buffers and graph capture are reused. EDT runs once during setup,
 outside benchmark timing; rays, vehicle poses and scans stay on the device.
-The unchanged `racesense3d` package supplies the mesh reference.
+The unchanged `racesense3d` package supplies the mesh backend.
 
 The approach follows the clearance-and-height marching idea in
 [warporacer3d](https://github.com/AlistairKeiller/warporacer3d/tree/0d8e059353d17218a69f949a558b14d84d1b305c/racer).
@@ -129,12 +106,8 @@ memory, and does not guarantee identical grazing decisions.
 
 The CPU demo completes multiple laps with zero contacts. The user's T4 EDT run
 measured grid/mesh navigation throughput ratios of 1.091x / 1.075x / 1.161x at
-1 / 64 / 256 cars. Fixed-scan ratios were 0.782x / 0.972x / 1.279x. Those results
-precede the optional sample cache and do not predict 4,096-car or PPO throughput.
-Both that run and the slower deleted traversal backend are recorded in
-[VALIDATION.md](../VALIDATION.md). Keep the mesh baseline while evaluating speed
-and accuracy, and use `benchmark scale` for identical moving poses and larger
-batches.
+1 / 64 / 256 cars ([VALIDATION.md](../VALIDATION.md)); these do not predict
+4,096-car or PPO throughput.
 
 `Simulation` wires grid LiDAR to the oval and to PNG maps (which require it; see
 `png-maps.md`). The underlying `DistanceField`
@@ -143,7 +116,7 @@ wall masks, with an empty outer mask border. Arrays use XY order; origin is the
 lower sample coordinate and spacing is in meters. Obstacles share one finite
 height above local ground, so a single field cannot represent overhangs. Layered
 tracks with bridges (`layers.md`) therefore reject grid LiDAR and use the mesh
-backend. Slope gravity remains future work in every physics path.
+backend.
 
 For an advanced resolution experiment, override only what changes:
 
@@ -154,5 +127,3 @@ uv run warptracer benchmark grid --grid-cell-size .02
 The oval adapter requires sample spacing no larger than one quarter of barrier
 thickness and caps generated fields at four million samples. Python callers use
 `LidarConfig(backend="grid", grid_cell_size=.025, frequency=60)` on `OvalTrack`.
-Benchmark schema 5 records `lidar_algorithm = "edt-sphere-tracing"` and the
-`grid_sample_cache` field distinguishes uncached/cached timing results.

@@ -1,5 +1,8 @@
 # Validation
 
+Point-in-time evidence; older entries may mention Newton, removed presets or
+removed flags, which existed when they ran.
+
 Checked on 2026-10-20 UTC with Linux x86-64, Python 3.12.14, Newton 1.6.0,
 Warp 1.17.0, Pyglet 2.1.19, and ImageIO/FFmpeg. SciPy is an explicit dependency for EDT
 preprocessing; PyTorch 2.8.0 is an optional `rl` dependency for training.
@@ -163,6 +166,67 @@ Trial variation was under 2% and all printed unfused/eager parity checks passed.
 This pasted report validates that workload; it does not establish grid results
 or execution of every CUDA test.
 
+## Trimmed codebase
+
+Checked on 2026-11-05, same machine as the entries below, after removing Newton and
+the scan-only benchmark workloads and merging the two bicycle kernels. Full suite:
+**247 passed, 1 skipped**. 120-second disparity demos on the oval and bridge matched
+recordings made before the refactor exactly: the maximum difference in poses,
+velocities, controls and LiDAR ranges was 0. Retraining the bridge for 300 updates
+(seed 0) reproduced the pre-refactor run's totals over the last 100 updates and its
+evaluation return of 1364.934. All six benchmark presets ran on cuda:0 with their
+parity checks passing, in 2-second single trials that are not throughput comparisons.
+Tests in `test_driving.py` and `test_lidar.py` that had defaulted to Newton now run
+on lean physics.
+
+## Multi-lap PPO episodes
+
+Checked on 2026-11-05, same machine as the slope gravity run below. Laps now pay
+their bonus without ending the episode. Full suite: **267 passed, 1 skipped**.
+`uv run warptracer train oval` for 300 updates (seed 0), last 100 updates, with
+one deterministic evaluation of the final checkpoint:
+
+| Track | Episodes ended | Laps | Mean laps/episode | Mean length | Evaluation laps in 60 s | Lap time after the first |
+| --- | --- | --- | --- | --- | --- | --- |
+| Bridge | 1,984 | 9,047 | 5.56 | 3,432 of 3,600 | 5 | about 10.0 s |
+| Oval | 2,100 | 12,767 | 6.53 | 3,076 of 3,600 | 7 | about 7.5 s |
+
+Neither evaluation crashed; both ended at the time limit. A bridge policy trained
+with lap termination also drove 5 laps in 60 s under the new evaluator, at about
+10.25 s per lap. Its first lap took 11.95 s, against 11.85 s for the new policy.
+This is one seed and one replay per track; the native viewer was not opened.
+
+## Slope gravity
+
+Checked on 2026-11-05 on Windows 11 with an RTX 4060 Laptop GPU (driver 610.88,
+CUDA Toolkit 12.9), Warp 1.17.0. Full suite: **261 passed, 1 skipped** (the CLI
+check that needs a host without CUDA); before the change it was 231 passed, 1
+skipped. `test_slope_gravity.py` checks coasting against the analytic plane result,
+round trips, brake hold, cross slopes, flat-ground exactness and fused/graph parity
+on the oval and bridge. `uv run warptracer benchmark oval --seconds 5 --trials 1`
+passed unfused/eager parity for 1, 64 and 256 cars; with one trial, its rates are
+not a throughput comparison.
+
+Disparity demos on cuda:0, 120 simulated seconds, before and after the change:
+
+| Track | Laps | Distance | Climbing mean speed | Descending mean speed | Wall contacts |
+| --- | --- | --- | --- | --- | --- |
+| Oval, before | 4 | 130.4 m | 1.20 m/s | 1.21 m/s | 0 |
+| Oval, after | 3 | 128.3 m | 1.00 m/s | 1.41 m/s | 0 |
+| Bridge, before | 3 | 129.9 m | 1.01 m/s | 1.02 m/s | 0 |
+| Bridge, after | 2 | 124.7 m | 0.71 m/s | 1.33 m/s | 0 |
+
+Lap counts are whole laps, so small distance changes can cross a lap boundary.
+`uv run warptracer train oval --bridge` (300 updates, seed 0) completed a lap in
+4,572 of 4,713 episodes (97.0%) over the last 50 updates. One greedy evaluation
+finished a lap in 11.95 s. This is one seed and one replay; the native viewer was
+not opened.
+
+A wrapped-launch audit found every kernel on cuda:0 and no host readbacks while
+stepping lean room/oval/bridge, Newton room and PPO; `test_device_placement.py`
+also covers PNG maps. Graph replays run captured kernels, so they were audited only
+by state-array device and absence of readbacks.
+
 ## Layered tracks (bridge)
 
 Checked on 2026-10-29 on Windows 11 with an RTX 4060 Laptop GPU (driver 610.88,
@@ -262,45 +326,6 @@ navigation ratios were 1.091x / 1.075x / 1.161x. Fixed scans have identical pose
 closed-loop navigation paths can differ. These measurements precede sample
 caching, distributed navigation starts and the new moving-scan workload.
 
-### Large batches, controlled moving scans and sampling cache
-
-Optional per-ray caching keeps the four grid samples until that ray leaves a
-bilinear patch. Cached/uncached kernels are specialized separately. CPU checks
-compare 257 tilted poses, including ground/roof/sky rays, with identical masks
-and range agreement within 2e-5 m. The same terrain representation, 2 mm surface
-tolerance and 512-iteration budget are retained. Uncached remains the default.
-The lean, disparity and EDT modules disable unused adjoint code generation for
-model-free rollouts; Newton and the copied mesh sensor package are unchanged.
-
-The `moving_scan` workload replays a shared 4,096-pose tilted centerline loop
-with phase offsets per car. Tests require identical sensor poses across mesh,
-uncached EDT and cached EDT, motion, loop wraparound and reset. Captured/fused
-and eager/unfused executions agree at 40 and 60 Hz. Moving-scan reports have zero
-physics rate and null simulated-speed metrics. It is a prescribed trajectory,
-not a recorded physical vehicle path.
-
-CPU 4,096-car checks compare selected scan entries against independent cars.
-A separate 4,096-car navigation check compares poses, velocities, controls,
-ranges and masks at distinct initial phases against independent runs after two
-transitions. This is an indexing/behavior check, not sustained GPU throughput or
-PPO validation. CUDA variants of these tests remain skipped locally.
-
-A three-trial CPU API graph check exercised `scale` with 1 / 64 cars, 10 seconds
-of the 60 Hz schedule and shortened 0.25-real-second warmup. All 12 execution
-parity checks passed; all trials had zero wall contacts and zero exhausted rays.
-At 64 cars, cached/uncached ratios were 0.938x for moving scans and 0.954x for
-navigation: caching did not help this CPU workload. Uncached EDT/mesh ratios
-were 1.446x and 1.099x respectively. These are not predictions for a T4.
-
-The `scale` preset tests 256 / 1,024 / 4,096 cars, mesh / uncached EDT / cached
-EDT, moving scans and disparity navigation, with 20 seconds per trial, three
-trials and default warmup. Navigation starts are spread around the oval so the
-batch does not contain thousands of identical driving states. Schema 5 records
-sampling variants and separate cache speed ratios. Both notebook code-cell
-compilation and Python 3.10 syntax checks passed. GPU throughput and hosted
-Colab execution of the complete preset remained unmeasured at this stage.
-This section predates the PPO/episode implementation below.
-
 ### Scale grazing-ray budget correction
 
 The user's T4 `scale` run passed all 18 execution-parity checks but aborted
@@ -385,25 +410,6 @@ No native GPU training or interactive browser/hosted Colab run was performed
 locally. CPU rates do not predict T4 training throughput. The smoke training
 entry point, checkpoint save/resume and all notebook code cells are checked.
 
-### Historical T4 result: deleted traversal backend
-
-The user's three-trial, 100-second Tesla T4 comparison used 2.5 cm cells, 108
-beams at 60 Hz, fused/graph and default warmup. All printed execution parity
-checks passed. Median grid/mesh speed ratios were:
-
-| Cars | Fixed scans | Full navigation |
-| ---: | ---: | ---: |
-| 1 | 0.334x | 0.731x |
-| 64 | 0.471x | 0.736x |
-| 256 | 0.239x | 0.695x |
-
-That implementation was slower in every tested case. Its common-hit p99 error
-was 31.0 mm, with 31 hit/miss differences and a 6.82 m maximum error. These results
-motivate the replacement and are not measurements of EDT marching. Use the same
-`benchmark grid` preset on Colab to measure the new implementation.
-PNG import, arbitrary-map physics, stacked terrain and slope gravity remain
-outside this change.
-
 ## Fusion, batches, and wall-clock warmup
 
 The shared bicycle step was compared against the pre-refactor kernel from commit
@@ -448,105 +454,20 @@ uv run --locked python -m warptracer.benchmark --device cpu --backend graph --in
 The README and Colab benchmark provide GPU runs with the default two-real-second
 warmup. New fused/batched native CUDA performance remains unmeasured here.
 
-## User-supplied CUDA benchmark (historical: unfused)
-
-Source: uploaded `benchmark.json`, reviewed with this documentation update.
-Hardware: **NVIDIA GeForce RTX 4060 Laptop GPU**, Windows 11, Python 3.12.12,
-Warp 1.17.0, Newton 1.6.0, NumPy 2.5.3. Physics engine: **lean**.
-
-One car; four 240 Hz substeps per transition; 1080 LiDAR beams at 60 Hz;
-recording at 30 Hz. Each of five trials advances ten simulated seconds after
-two simulated seconds of warmup. These are medians from the supplied report.
-
-| Workload | Eager transitions/s | Graph transitions/s | Graph substeps/s | Graph speedup |
-| --- | ---: | ---: | ---: | ---: |
-| Physics only | 4,675 | 57,283 | 229,130 | 12.3× |
-| Physics + LiDAR | 4,406 | 29,360 | 117,442 | 6.7× |
-| Physics + LiDAR + recording | 2,636 | 6,537 | 26,149 | 2.5× |
-
-All three CUDA graph parity checks report passed. Recomputed medians agree with
-the report, and all 30 trials have identical final body poses and velocities.
-Recording trials retain 301 frames each. This validates the benchmark workload,
-not arbitrary vehicle states or all GPU test cases.
-
-With LiDAR and graph replay, ten simulated seconds take **20.44 ms** at the
-median, about **489× real time**. Adding host recording raises this to **91.78 ms**
-(about 109× real time). That points to host copying/synchronization as a major
-cost in the recording path; it is not a kernel-level profile.
-
-Physics-only graph trials span 9.16–15.06 ms; LiDAR graph trials span
-17.04–28.10 ms. These short trials show noticeable variation. Use the
-[longer headless benchmark](docs/benchmarking.md#longer-timing-samples) before
-drawing fine-grained performance conclusions. CUDA event intervals include
-stream idle time; they do not isolate GPU kernel time.
-
-This report compares eager and graph execution of lean physics. It contains
-no Newton timings, so it cannot establish lean-versus-Newton GPU speedup.
-Parallel-environment throughput remains unmeasured.
-
-## Single-car CPU benchmark (historical: 1080 rays)
-
-Both engines use the same scripted circle workload, four 240 Hz physics substeps
-per transition, 1080 rays at 60 Hz in sensing cases, and 30 Hz host recording.
-Three trials follow two simulated seconds of warmup each. Lean trials advance
-60 simulated seconds; Newton trials advance 10. Medians below measure one car,
-not aggregate throughput across parallel environments.
-
-Timing includes stepping, sensing, and optional host recording. It excludes
-compilation, construction, warmup, reset, validation, HTML export, and disk writes.
-Recording retains body/control/scan samples; it does not generate the viewer.
-
-| Engine | Execution | Physics only, substeps/s | With LiDAR, substeps/s | With LiDAR + recording, substeps/s |
-| --- | --- | ---: | ---: | ---: |
-| lean | eager | 19,632 | 9,068 | 8,429 |
-| lean | graph | 1,615,713 | 16,256 | 12,750 |
-| newton | eager | 408 | 392 | 401 |
-| newton | graph | 5,010 | 3,769 | 3,612 |
-
-Divide substeps/s by four for environment transitions/s.
-
-Reproduce the historical CPU measurements:
-
-```bash
-uv run --locked python -m warptracer.benchmark --device cpu --physics lean --backend both --integrator unfused --warmup-wall-seconds 0 --lidar-beams 1080 --seconds 60 --trials 3 --output outputs/lean-cpu.json
-uv run --locked python -m warptracer.benchmark --device cpu --physics newton --backend both --integrator unfused --warmup-wall-seconds 0 --lidar-beams 1080 --seconds 10 --trials 3 --output outputs/newton-cpu.json
-```
-
-The physics-only lean graph trial is very short, so its rate is especially
-sensitive to timer resolution and machine load. CPU results are indicative,
-not a GPU speed claim. JSON reports retain individual trials and timing spread.
-The historical demo scanned at 30 Hz; current CLI demos and benchmark presets
-both default to 60 Hz sensing.
-
-## Driving and playback (historical: 1080 rays)
-
-All three ten-second lean driving demos export Viser HTML, trajectory NPZ, and
-metadata JSON. Each has 301 body samples and 301 mounted scans with 1080 beams
-at the then-default 30 Hz, with all returns valid. Acceleration/braking peaks near
-1.69 m/s and stops; the circle completes a lap; the S-turn changes steering
-direction and stops. The scene still uses one box car, one floor, and four walls.
-
-All code cells in both notebooks compile. The benchmark notebook clones or switches to
-performance-prototype and uses the same repository-root uv environment as the
-driving notebook. Actual hosted Colab and native browser playback have not been
-tested here.
-
 ## Model limits
 
 Lean uses a planar dynamic bicycle with illustrative parameters, two
 friction-limited axle forces and an implicit lateral/yaw prediction. Height is
-fixed in the room; the oval constrains height/tilt to its road surface and reports
-vertical motion. Chassis-footprint checks stop velocity at room walls or oval
-barriers. The force model does not simulate gravity along slopes, suspension,
-airborne motion, calibrated tire slip curves, wheel spin, or reverse throttle.
-Newton remains available for the earlier room force/contact behavior.
+fixed in the room; the oval and layered tracks constrain height/tilt to the road,
+report vertical motion and apply gravity along the slope. Chassis-footprint checks
+stop velocity at walls. The force model does not simulate suspension, airborne
+motion, calibrated tire slip curves, wheel spin, or reverse throttle.
 
 LiDAR is instantaneous and noise-free. Mesh sensing uses the unchanged sensor
 package; the optional grid backend approximates the oval with height/occupancy
 arrays. The host vehicle is excluded. Mesh sensor geometry matches playback;
 the grid approximation can differ at rasterized boundaries.
 Independent environments now share static geometry and run in batches.
-Moving obstacles and scan distortion are not implemented. The optional PPO
-interface adds rewards, episode termination and individual automatic resets
-for the elevated oval; it does not add car-to-car interactions or calibrated
+Moving obstacles and scan distortion are not implemented. The PPO
+interface adds rewards, episode termination and individual automatic resets; it does not add car-to-car interactions or calibrated
 vehicle/terrain dynamics.

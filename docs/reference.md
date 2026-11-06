@@ -41,7 +41,7 @@ too-near surfaces still occlude anything behind them.
 from warptracer.lidar import LidarConfig
 from warptracer.simulation import Simulation
 
-sim = Simulation(scenario="circle", engine="lean", lidar=LidarConfig(), device="cpu")
+sim = Simulation(scenario="circle", lidar=LidarConfig(), device="cpu")
 trajectory = sim.run(duration=10)
 scans = trajectory.lidar
 print(scans.ranges.shape)   # (301, 108): initial scan plus 30 scans/s
@@ -72,46 +72,42 @@ until the next scan, while pose frames follow their own timeline.
 
 ## Driving model
 
-Both backends use the same single 0.52 × 0.26 × 0.12 m, 3.2 kg box, rectangular
-track, controls, LiDAR, and playback. Driving uses a 12 × 6 m clear area,
-or 8 × 8 m for the circle demo. There are no wheel meshes or joints.
-Lean additionally supports the elevated oval through `OvalTrack`, with road-following
-height/tilt and checks of the chassis footprint at both barriers. Newton currently
-supports the room only.
+Cars are a single 0.52 × 0.26 × 0.12 m, 3.2 kg box. Driving uses a 12 × 6 m clear
+area, or 8 × 8 m for the circle demo. There are no wheel meshes or joints.
 
-| Part | Lean backend | Newton baseline |
-| --- | --- | --- |
-| Motion | Planar bicycle; surface-following height/tilt on the oval | Six-degree-of-freedom rigid body |
-| Tire forces | Two axles with slip-velocity damping and shared longitudinal/lateral grip budgets | Four tire points with friction limited by spring support |
-| Steering | Front axle, ±0.418 rad limit, 1.5 rad/s rate limit | Same limits |
-| Acceleration/braking | Grip-limited propulsion; brake opposes forward motion | Tire forces |
-| Support | Height/normal constrained to road; flat in the room | Spring/damper support |
-| Walls | Chassis footprint contained inside the room or oval lane; stop on contact | Newton contacts |
-| Integration | One Warp kernel per substep, or fused substeps via TransitionRunner | Tire kernel, collision pipeline, XPBD solver |
-| Sensors/viewer | Existing 3D LiDAR and Warp OpenGL playback | Same |
+| Part | Lean physics |
+| --- | --- |
+| Motion | Planar bicycle; surface-following height/tilt on the oval and layered tracks |
+| Tire forces | Two axles with slip-velocity damping and shared longitudinal/lateral grip budgets |
+| Steering | Front axle, ±0.418 rad limit, 1.5 rad/s rate limit |
+| Acceleration/braking | Grip-limited propulsion; brake opposes forward motion |
+| Support | Height/normal constrained to road; flat in the room |
+| Walls | Chassis footprint kept inside the room, oval lane or map free space; stop on contact |
+| Integration | One Warp kernel per substep, or fused substeps via TransitionRunner |
+| Sensors/viewer | 3D LiDAR and Warp OpenGL playback |
 
-Lean uses an implicit lateral/yaw force prediction to handle stiffness at low
+The model uses an implicit lateral/yaw force prediction to handle stiffness at low
 speeds, then clips forces to the available grip. It is an illustrative racing
 model, not calibrated F1TENTH dynamics. It has no suspension, free fall, wheel
-spin, Ackermann linkage, or reverse throttle. The oval adds constrained terrain
-height/tilt without changing the planar tire force model; it does not model
-gravity along slopes. Newton still provides the
-earlier free-body checks. The fixed lean height uses the original nominal ride
-height; spring/damper and track-width parameters otherwise do not affect lean
-dynamics. The lean collision flag describes the latest substep.
+spin, Ackermann linkage, or reverse throttle. The oval and layered tracks constrain
+height/tilt to the road, and gravity acts along the slope: `g` times the chassis
+forward/left axes' Z components adds to `u`/`v`, so cars slow uphill, speed up
+downhill and can roll backward. Unused brake force holds against the slope, so a
+braked car stops on a grade its `max_braking` can hold. Lateral tires have no static
+grip, so a stopped car creeps slowly down a cross slope. The tire grip budget still
+uses the flat-ground load, and `u` still advances XY directly, so energy is
+conserved to about 1% at 14% grade. Flat tracks have exactly zero slope force.
+The collision flag describes the latest substep.
 `wall_contact_substeps` accumulates every contacting substep, including inside
 fused transitions, and clears on reset. It counts contact duration in substeps,
 not distinct collisions. See [LiDAR navigation](navigation.md) for the controller.
-
-Python's `Simulation` keeps `engine="newton"` as its default for compatibility.
-Pass `engine="lean"` explicitly. Driving CLI demos default to lean.
 
 ## Control the car
 
 ```python
 from warptracer.simulation import Simulation
 
-sim = Simulation(scenario="drive", engine="lean", device="cpu")
+sim = Simulation(scenario="drive", device="cpu")
 sim.set_action(throttle=0.4, brake=0.0, steering=0.15)
 for _ in range(240):
     sim.step()  # advances one physics timestep; inputs persist
@@ -152,13 +148,10 @@ Coordinates are Z up, X forward, Y left. Saved poses are `x,y,z,qx,qy,qz,qw`,
 velocities are `vx,vy,vz,wx,wy,wz`, and applied controls are
 `throttle,brake,steering_rad`. The initial sample has zero applied controls;
 later samples store the controls used in the preceding physics step.
-Newton's world-frame force/torque convention is documented
-[here](https://newton-physics.github.io/newton/stable/concepts/conventions.html).
 
 
 ## Batches
 
-Pass `num_envs=N` with `engine="lean"` for independent cars sharing static track
-geometry. The single-car API and array shapes are unchanged when N=1.
+Pass `num_envs=N` for independent cars sharing static track geometry. The single-car API and array shapes are unchanged when N=1.
 For batch controls, captured stepping, array shapes, and resets, see the
-[benchmark API example](benchmarking.md#python-api).
+[benchmark API example](benchmarking.md#python-batch-api).

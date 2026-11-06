@@ -88,7 +88,8 @@ diagrams should first be converted into an occupancy mask.
 - Cars spawn along the validated route with the existing small heading variation.
   Reward is signed continuous route-distance progress, with the existing failure,
   lap and timeout rules. Local segment projection preserves route order through
-  nearby hairpins. A full forward route length completes a lap.
+  nearby hairpins. Each full forward route length completes a lap and pays its
+  bonus; the episode continues.
 - PNGs are limited to four million pixels. Resolution controls physical scale,
   not resampling: resizing the image requires updating meters per pixel. Coarse
   cells produce coarser LiDAR surfaces and more conservative collisions.

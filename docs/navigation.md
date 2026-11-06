@@ -11,7 +11,7 @@ and otherwise CPU. Run `uv run warptracer view outputs/disparity.npz` for native
 playback on your GPU machine, or add `--video` to the demo for Colab. The NPZ retains poses, applied controls and scans; the JSON records
 controller settings and `wall_contact_substeps`. This counter counts every
 physics substep touching a wall, including contacts inside a fused transition.
-It is not a count of distinct crashes. Newton currently reports no such counter.
+It is not a count of distinct crashes.
 
 ## Controller
 
@@ -70,7 +70,7 @@ commands and controller state and cannot see the other cars.
 
 The demo and benchmark presets use 60 Hz sensing/control. At 40 Hz, use
 `--lidar-hz 40 --record-fps 20` for the demo. Duration and recording intervals
-must contain whole transitions, each with an even number of physics substeps.
+must contain whole transitions.
 
 ```python
 from warptracer.disparity import DisparityConfig
@@ -78,7 +78,7 @@ from warptracer.execution import TransitionRunner
 from warptracer.lidar import LidarConfig
 from warptracer.simulation import Simulation
 
-sim = Simulation(scenario="drive", engine="lean", device="cuda:0", num_envs=256,
+sim = Simulation(scenario="drive", device="cuda:0", num_envs=256,
                  lidar=LidarConfig(beams=108, frequency=60))
 runner = TransitionRunner(sim, backend="graph", integrator="fused", substeps=4,
                           controller="disparity",

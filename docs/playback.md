@@ -42,9 +42,7 @@ recording, use `uv run warptracer view outputs/oval-grid.npz --video`.
 
 Without `--view` or `--video`, demos/evaluation only save arrays and metadata;
 no graphics module or display context is initialized. Training and benchmarks
-also remain headless. Demo `--headless` additionally skips intermediate recording
-copies and cannot be combined with `--view` or `--video`.
-
+also remain headless.
 The current viewer requires a working NVIDIA CUDA driver/GPU and OpenGL context.
 Warp 1.17's buffer fallback still allocates CUDA pinned memory, so CPU-only
 machines without an NVIDIA driver can simulate and record but cannot use this
