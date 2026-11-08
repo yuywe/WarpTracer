@@ -4,7 +4,6 @@ import pytest
 
 torch = pytest.importorskip('torch')
 import warp as wp
-from dataclasses import replace
 from warptracer.rl_env import EpisodeConfig, RacingEnv
 from warptracer.distance_field import GridScene, DistanceField
 from warptracer.lidar import LidarConfig
@@ -58,7 +57,7 @@ def test_collision_is_terminal_and_penalized_even_if_timeout_coincides(device):
     assert torch.isfinite(env.observation).all()
 
 
-def test_progress_wraps_signed_and_lap_completion_is_terminal():
+def test_progress_wraps_signed_and_lap_completion_continues_the_episode():
     env = RacingEnv(EpisodeConfig(num_envs=1, start_speed=0), device='cpu')
     pose = env.track.pose(-np.pi+.01, env.sim.drive.ride_height(env.sim.vehicle))
     env.sim.state.body_q.assign(pose[None])
@@ -69,7 +68,63 @@ def test_progress_wraps_signed_and_lap_completion_is_terminal():
     assert env.tensors['reward'][0] > 0
     env.tensors['progress'][0] = 2*np.pi+.01
     env.step(torch.zeros(1, 2))
-    assert env.tensors['reason'][0] == 2 and env.tensors['terminated'][0] == 1
+    assert env.tensors['lap_completed'][0] == 1 and env.tensors['laps'][0] == 1
+    assert env.tensors['reason'][0] == 0 and env.tensors['terminated'][0] == 0
+    assert env.tensors['done'][0] == 0 and env.tensors['finished_laps'][0] == 0
+
+
+@pytest.mark.parametrize('device', DEVICES)
+def test_each_lap_pays_its_bonus_once(device):
+    config = EpisodeConfig(num_envs=1, start_speed=0, stall_steps=10000)
+    env = RacingEnv(config, device=device)
+    actions = torch.zeros(1, 2, device=env.torch_device)
+
+    def reward_at(progress):
+        env.tensors['progress'][0] = progress
+        env.step(actions)
+        return env.tensors['reward'][0].item(), env.tensors['lap_completed'][0].item()
+
+    assert reward_at(2*np.pi-.01)[1] == 0
+    reward, lap = reward_at(2*np.pi+.01)
+    assert lap == 1 and reward == pytest.approx(config.lap_bonus, abs=.5)
+    # Still past the line, then rolled back and re-crossed: no second payment.
+    assert reward_at(2*np.pi+.02)[1] == 0
+    assert reward_at(2*np.pi-.5)[1] == 0
+    reward, lap = reward_at(2*np.pi+.5)
+    assert lap == 0 and abs(reward) < .5
+    assert env.tensors['laps'][0] == 1
+    # The next lap's line pays again.
+    reward, lap = reward_at(4*np.pi+.01)
+    assert lap == 1 and reward == pytest.approx(config.lap_bonus, abs=.5)
+    assert env.tensors['laps'][0] == 2 and env.tensors['terminated'][0] == 0
+
+
+@pytest.mark.parametrize('device', DEVICES)
+def test_time_limit_ends_a_multi_lap_episode_and_clears_its_laps(device):
+    env = RacingEnv(EpisodeConfig(num_envs=2, start_speed=0, max_steps=3), device=device)
+    actions = torch.zeros(2, 2, device=env.torch_device)
+    env.tensors['progress'][0] = 2*np.pi+.01
+    env.step(actions)
+    env.tensors['progress'][0] = 4*np.pi+.01
+    env.step(actions)
+    assert env.tensors['laps'].tolist() == [2, 0]
+    _, _, terminated, truncated = env.step(actions)
+    assert terminated.tolist() == [0, 0] and truncated.tolist() == [1, 1]
+    assert env.tensors['reason'].tolist() == [3, 3]
+    assert env.tensors['finished_laps'][0].item() == pytest.approx(2, abs=.01)
+    assert env.tensors['laps'].tolist() == [0, 0] and env.tensors['progress'].tolist() == [0, 0]
+
+
+@pytest.mark.parametrize('device', DEVICES)
+def test_a_crash_on_the_lap_line_pays_no_bonus(device):
+    config = EpisodeConfig(num_envs=1, start_speed=0)
+    env = RacingEnv(config, device=device)
+    env.tensors['progress'][0] = 2*np.pi+.01
+    # Non-finite motion is a failure the environment detects on this same step.
+    env.sim.lean_motion.assign(np.array([[np.nan, 0, 0, 0]], np.float32))
+    env.step(torch.zeros(1, 2, device=env.torch_device))
+    assert env.tensors['reward'][0].item() == -config.collision_penalty
+    assert env.tensors['lap_completed'][0] == 0 and env.tensors['terminated'][0] == 1
 
 
 @pytest.mark.parametrize('device', DEVICES)

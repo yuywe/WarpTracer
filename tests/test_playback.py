@@ -140,6 +140,6 @@ def test_recording_and_training_import_do_not_import_graphics(tmp_path):
 @pytest.mark.skipif(not wp.is_cuda_available(), reason="Warp OpenGL buffers require a working CUDA driver")
 def test_native_warp_offscreen_video(tmp_path):
     path = playback.save_recording(recording(), OvalTrack(), Vehicle(), tmp_path / "native.npz")
-    subprocess.run([sys.executable, "-m", "warptracer", "view", str(path), "--video"],
+    subprocess.run([sys.executable, "-c", "from warptracer.cli import main; main()", "view", str(path), "--video"],
                    check=True, capture_output=True, text=True, timeout=120)
     assert path.with_suffix(".mp4").stat().st_size > 1000

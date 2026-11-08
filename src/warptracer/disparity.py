@@ -38,10 +38,12 @@ class DisparityConfig:
 def usable_range(ranges: wp.array2d(dtype=float), valid: wp.array2d(dtype=int),
                  car: int, ray: int, cap: float):
     value = ranges[car, ray]
-    # The sensor mask combines misses and near-clipped returns. Treat unknown
-    # space as blocked; interpreting a near-clipped obstacle as free is unsafe.
-    if valid[car, ray] == 0 or not wp.isfinite(value) or value <= 0.0:
+    if not wp.isfinite(value) or value <= 0.0:
         return float(0.0)
+    # Rays that clear low walls return nothing, so a miss is open out to the cap.
+    # The mask cannot separate these from returns nearer than the sensor minimum.
+    if valid[car, ray] == 0:
+        return cap
     return wp.min(value, cap)
 
 
@@ -83,8 +85,10 @@ def choose_command(ranges: wp.array2d(dtype=float), valid: wp.array2d(dtype=int)
     right_clear = geometry_cap
     left_space = float(0.0)
     right_space = float(0.0)
+    returns = int(0)
     for ray in range(beams):
         a = first + float(ray) * increment
+        returns += valid[car, ray]
         # Target scoring is capped, but turn hysteresis needs actual geometry.
         d = usable_range(ranges, valid, car, ray, geometry_cap)
         if a > 0.5 and a < 1.57:
@@ -145,7 +149,8 @@ def choose_command(ranges: wp.array2d(dtype=float), valid: wp.array2d(dtype=int)
     delay = braking * reaction_time
     speed = wp.min(max_speed / (1.0 + 2.0 * wp.abs(steering) / max_steering),
                    wp.sqrt(delay * delay + 2.0 * braking * available) - delay)
-    if target_clearance <= stop_margin or (steering > 0.0 and left_clear < radius) or (steering < 0.0 and right_clear < radius):
+    # A scan with no returns says nothing about the road, so it cannot justify moving.
+    if returns == 0 or target_clearance <= stop_margin or (steering > 0.0 and left_clear < radius) or (steering < 0.0 and right_clear < radius):
         speed = 0.0
         steering = 0.0
     commands[car] = wp.vec4(0.0, 0.0, steering, speed)
@@ -160,7 +165,7 @@ class DisparityController:
     """
     def __init__(self, sim, config=None):
         self.config = config or DisparityConfig()
-        if not sim.driving or sim.lidar is None:
+        if sim.lidar is None:
             raise ValueError("Disparity control requires a driving car with LiDAR")
         lc = sim.lidar.config
         if lc.beams < 3 or not 180 <= lc.fov_degrees < 360 or lc.mount_rpy != (0.0, 0.0, 0.0):
@@ -173,9 +178,9 @@ class DisparityController:
             raise ValueError("Disparity control requires LiDAR coverage within 20 degrees of forward")
         if not np.any(np.abs(angles) <= np.deg2rad(self.config.search_degrees)):
             raise ValueError("Disparity search sector must contain at least one LiDAR beam")
-        self.filtered = wp.empty((sim.num_envs, lc.beams), dtype=float, device=sim.model.device)
-        self.goals = wp.empty(sim.num_envs, dtype=wp.vec2, device=sim.model.device)
-        self.turns = wp.zeros(sim.num_envs, dtype=float, device=sim.model.device)
+        self.filtered = wp.empty((sim.num_envs, lc.beams), dtype=float, device=sim.device)
+        self.goals = wp.empty(sim.num_envs, dtype=wp.vec2, device=sim.device)
+        self.turns = wp.zeros(sim.num_envs, dtype=float, device=sim.device)
 
     def reset(self):
         self.turns.zero_()
@@ -192,7 +197,7 @@ class DisparityController:
         loop = isinstance(sim.track, (OvalTrack, LayeredTrack))
         wp.launch(extend_disparities, dim=(sim.num_envs, beams), inputs=[
             ranges, valid, self.filtered, beams, self.increment, radius,
-            cfg.disparity_threshold, cap], device=sim.model.device)
+            cfg.disparity_threshold, cap], device=sim.device)
         wp.launch(choose_command, dim=sim.num_envs, inputs=[
             ranges, valid, self.filtered, sim.device_commands, self.goals, self.turns,
             beams, self.first, self.increment, np.deg2rad(cfg.search_degrees), sim.lidar.config.far,
@@ -204,7 +209,7 @@ class DisparityController:
              2.0 * sim.drive.wheelbase / np.tan(sim.drive.max_steering) + sim.vehicle.length / 2 + cfg.stop_margin
             + cfg.max_speed * (sim.drive.max_steering / sim.drive.steering_rate
                                + 1.0 / sim.lidar.config.frequency)),
-            sim.drive.wheelbase, cfg.steering_lookahead if loop else 0.0], device=sim.model.device)
+            sim.drive.wheelbase, cfg.steering_lookahead if loop else 0.0], device=sim.device)
         sim.invalidate_command_cache()
 
     def __call__(self, sim, time):

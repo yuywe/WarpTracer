@@ -70,6 +70,7 @@ class LayeredTrack:
         self.segment_lengths = np.linalg.norm(np.roll(self.route, -1, axis=0) - self.route, axis=1)
         if self.segment_lengths.min() < 1e-5 or self.segment_lengths.max() > .151:
             raise ValueError("Route must be densely sampled (segments <= 0.15 m)")
+        self.arc = np.r_[0, np.cumsum(self.segment_lengths[:-1])].astype(np.float32)
         self.route_length = float(self.segment_lengths.sum())
         # A node is open on layer L where another layer is drivable at L's height:
         # walls stop there so the car can cross the seam. Everything else is wall.
@@ -83,7 +84,7 @@ class LayeredTrack:
         self.clearance = np.stack([distance_transform_edt(~w) * self.resolution - self.resolution / np.sqrt(2)
                                    for w in walls]).astype(np.float32)
         for array in (self.heights, self.free, self.seam, self.clearance, self.route,
-                      self.route_layers, self.segment_lengths):
+                      self.route_layers, self.segment_lengths, self.arc):
             array.flags.writeable = False
 
     def _grid(self, points):
@@ -152,31 +153,13 @@ class LayeredTrack:
         return _layer_mesh(self)
 
     def mesh(self):
-        """LiDAR geometry: replay parts inside a closed room (floor, walls, ceiling)
-        so every ray returns, as it would indoors. Replay omits the room."""
-        parts = list(self.mesh_parts().values()) + [self._room()]
+        """LiDAR geometry: the replay parts as one mesh. Rays that clear the walls return nothing."""
         vertices, faces, offset = [], [], 0
-        for v, f in parts:
+        for v, f in self.mesh_parts().values():
             vertices.append(v)
             faces.append(f + offset)
             offset += len(v)
         return np.concatenate(vertices), np.concatenate(faces)
-
-    def _room(self):
-        x0, y0 = self.origin
-        x1, y1 = x0 + self.length, y0 + self.width
-        z0, z1 = float(self.heights.min()) - .03, float(self.heights.max()) + 1.5
-        corners = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]])
-        vertices, faces = [], []
-        for a, b in zip(corners, np.roll(corners, -1, axis=0)):
-            base = len(vertices)
-            vertices += [[*a, z0], [*b, z0], [*b, z1], [*a, z1]]
-            faces += [[base, base + 1, base + 2], [base, base + 2, base + 3]]
-        for z in (z0, z1):
-            base = len(vertices)
-            vertices += [[*c, z] for c in corners]
-            faces += [[base, base + 1, base + 2], [base, base + 2, base + 3]]
-        return np.array(vertices, np.float32), np.array(faces, np.int32)
 
     def state_dict(self):
         state = {"kind": "layered", "name": self.name}

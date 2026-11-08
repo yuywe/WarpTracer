@@ -27,7 +27,7 @@ def main(argv=None):
         run_demo(rest)
     elif command == "benchmark":
         from .benchmark import main as run_benchmark
-        run_benchmark(rest, default_preset="quick")
+        run_benchmark(rest)
     else:
         from .train import main as train, evaluate
         (train if command == "train" else evaluate)(rest)

@@ -51,7 +51,7 @@ def test_known_wall_ranges_and_rotated_mount_offset():
     q[0, :2] = [1, .3]
     q[0, 3:] = [0, 0, np.sqrt(.5), np.sqrt(.5)]
     sim.state.body_q.assign(q)
-    sim.lidar.update(sim.state, sim.body, 0)
+    sim.lidar.update(sim.state, 0)
     pose, values, valid = sim.lidar.snapshot()
     np.testing.assert_allclose(pose[:2], [1, .42], atol=1e-6)
     np.testing.assert_allclose(values, [2, 1.58, 4], atol=1e-5)
@@ -74,7 +74,7 @@ def test_full_body_and_mount_rotation_composition():
     q = sim.state.body_q.numpy()
     q[0] = [.2, -.3, .5, *wp.quat_rpy(.2, -.15, .6)]
     sim.state.body_q.assign(q)
-    sim.lidar.update(sim.state, sim.body, .25)
+    sim.lidar.update(sim.state, .25)
     pose, values, valid = sim.lidar.snapshot()
     body_R = rotation_matrix(q[0, 3:])
     expected_R = body_R @ rotation_matrix(np.array(wp.quat_rpy(*config.mount_rpy)))
@@ -130,7 +130,6 @@ def test_sensing_does_not_change_vehicle_motion():
     for config in (None, LidarConfig()):
         sim = Simulation(scenario="circle", device="cpu", lidar=config)
         outputs.append(sim.run(1))
-        assert sim.model.body_count == 1 and sim.model.shape_count == 6
     np.testing.assert_array_equal(outputs[0].poses, outputs[1].poses)
     np.testing.assert_array_equal(outputs[0].velocities, outputs[1].velocities)
 

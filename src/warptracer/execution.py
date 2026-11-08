@@ -1,10 +1,5 @@
 """Fixed-size transitions, executed eagerly or replayed from a Warp graph."""
-from functools import lru_cache
-
-import numpy as np
 import warp as wp
-
-from .terrain import OvalTrack
 
 
 @wp.kernel
@@ -23,42 +18,39 @@ def advance_clock(clock: wp.array(dtype=int), substeps: int):
 class TransitionRunner:
     """Own the simulation's stepping while active; reset through this runner.
 
-    A transition has an even number of physics substeps and, when enabled, one
-    LiDAR scan at the end. Even counts restore the state-buffer parity on every
-    graph replay. The graph reads commands from stable device buffers.
+    A transition has a fixed number of physics substeps and, when enabled, one
+    LiDAR scan at the end. The graph reads commands from stable device buffers.
     """
     def __init__(self, sim, backend="eager", substeps=4, controller="manual", integrator="unfused", disparity_config=None):
         if backend not in ("eager", "graph"):
             raise ValueError("backend must be eager or graph")
-        if not isinstance(substeps, int) or substeps < 2 or substeps % 2:
-            raise ValueError("substeps must be a positive even integer >= 2")
+        if not isinstance(substeps, int) or substeps < 1:
+            raise ValueError("substeps must be a positive integer")
         if sim.physics_hz % substeps:
             raise ValueError("substeps must divide physics_hz")
         if sim.lidar is not None and sim.lidar_stride != substeps:
             raise ValueError("Transition runner requires one LiDAR scan per transition")
         if controller not in ("manual", "circle", "disparity"):
             raise ValueError("controller must be manual, circle or disparity")
-        if controller == "circle" and (not sim.driving or sim.drive.max_steering < .25):
-            raise ValueError("Circle benchmark requires a driving car with >= .25 rad steering")
+        if controller == "circle" and sim.drive.max_steering < .25:
+            raise ValueError("Circle benchmark requires >= .25 rad steering")
         if integrator not in ("unfused", "fused"):
             raise ValueError("integrator must be unfused or fused")
-        if integrator == "fused" and sim.engine != "lean":
-            raise ValueError("Fused integration requires lean physics")
         self.integrator = integrator
         self.sim, self.backend, self.substeps, self.controller = sim, backend, substeps, controller
         self.navigator = None
         if controller == "disparity":
             from .disparity import DisparityController
             self.navigator = DisparityController(sim, disparity_config)
-        self.clock = wp.zeros(1, dtype=int, device=sim.model.device)
+        self.clock = wp.zeros(1, dtype=int, device=sim.device)
         self.graph = None
         self.reset()
         if backend == "graph":
             # Materialize lazy solver allocations and load kernels before capture.
             self._operations()
-            wp.synchronize_device(sim.model.device)
+            wp.synchronize_device(sim.device)
             self.reset()
-            with wp.ScopedCapture(device=sim.model.device, force_module_load=False) as capture:
+            with wp.ScopedCapture(device=sim.device, force_module_load=False) as capture:
                 self._operations()
             self.graph = capture.graph
             self.reset()
@@ -67,7 +59,7 @@ class TransitionRunner:
     def graph_kind(self):
         if self.backend == "eager":
             return None
-        return "cuda" if self.sim.model.device.is_cuda else "cpu-api-capture"
+        return "cuda" if self.sim.device.is_cuda else "cpu-api-capture"
 
     def _operations(self):
         sim = self.sim
@@ -76,15 +68,15 @@ class TransitionRunner:
             self.navigator.update()
         if self.controller == "circle":
             wp.launch(circle_command, dim=sim.num_envs, inputs=[sim.device_commands, self.clock, sim.dt],
-                      device=sim.model.device)
+                      device=sim.device)
         if self.integrator == "fused":
-            sim._fused_physics_steps(self.substeps)
+            sim._integrate(self.substeps)
         else:
             for _ in range(self.substeps):
-                sim._physics_step()
+                sim._integrate(1)
         if sim.lidar is not None:
-            sim.lidar.update(sim.state, sim.body, 0.0)
-        wp.launch(advance_clock, dim=1, inputs=[self.clock, self.substeps], device=sim.model.device)
+            sim.lidar.update(sim.state, 0.0)
+        wp.launch(advance_clock, dim=1, inputs=[self.clock, self.substeps], device=sim.device)
 
     def reset(self):
         self.sim.reset()
@@ -103,56 +95,3 @@ class TransitionRunner:
             self.sim._uploaded_command = None
         if self.sim.lidar is not None:
             self.sim.lidar.timestamp = self.sim.steps * self.sim.dt
-
-
-class ScanRunner(TransitionRunner):
-    """Benchmark-only scan replay: fixed poses, no physics/controller work.
-
-    The inherited counter advances a nominal sensor schedule for accounting;
-    vehicle state never advances. Both geometry backends see identical rays.
-    """
-    def _operations(self):
-        self.sim.lidar.update(self.sim.state, self.sim.body, 0.0)
-        wp.launch(advance_clock, dim=1, inputs=[self.clock, self.substeps], device=self.sim.model.device)
-
-
-@lru_cache(maxsize=8)
-def _centerline_path(track, ride_height):
-    """Shared host preprocessing; upload one compact loop, never frames x cars."""
-    poses = np.array([track.pose(a, ride_height) for a in
-                      np.linspace(-np.pi / 2, 3 * np.pi / 2, 4096, endpoint=False)])
-    poses.flags.writeable = False
-    return poses
-
-
-@wp.kernel
-def _replay_poses(path: wp.array(dtype=wp.transform), offsets: wp.array(dtype=int),
-                  clock: wp.array(dtype=int), substeps: int, poses: wp.array(dtype=wp.transform)):
-    car = wp.tid()
-    # Two path samples per transition: a complete loop every 2048 scans.
-    frame = (offsets[car] + 2 * (clock[0] // substeps + 1)) % path.shape[0]
-    poses[car] = path[frame]
-
-
-class MovingScanRunner(ScanRunner):
-    """Prescribed tilted centerline poses, identical for all sensing backends.
-
-    This is a scan-only workload, with no simulated dynamics or policy. Cars
-    start at distinct phases; path replay and mount composition stay on-device.
-    """
-    def __init__(self, sim, **options):
-        if not isinstance(sim.track, OvalTrack) or sim.engine != "lean":
-            raise ValueError("Moving scans require the lean oval track")
-        host_path = _centerline_path(sim.track, sim.drive.ride_height(sim.vehicle))
-        offsets = np.arange(sim.num_envs, dtype=np.int64) * len(host_path) // sim.num_envs
-        sim.initial_pose[:] = host_path[offsets]
-        self.path = wp.array(host_path, dtype=wp.transform, device=sim.model.device)
-        self.offsets = wp.array(offsets.astype(np.int32), dtype=int, device=sim.model.device)
-        super().__init__(sim, **options)
-
-    def _operations(self):
-        sim = self.sim
-        wp.launch(_replay_poses, dim=sim.num_envs, inputs=[self.path, self.offsets, self.clock,
-                  self.substeps], outputs=[sim.state.body_q], device=sim.model.device)
-        sim.lidar.update(sim.state, sim.body, 0.0)
-        wp.launch(advance_clock, dim=1, inputs=[self.clock, self.substeps], device=sim.model.device)

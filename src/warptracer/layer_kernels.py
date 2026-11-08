@@ -1,6 +1,6 @@
 """Layered 2.5D road following and collision on the device; see layers.py."""
 import warp as wp
-from .lean import bicycle_step
+from .lean import BicycleParams, bicycle_step
 
 wp.set_module_options({"enable_backward": False})
 
@@ -86,10 +86,7 @@ def integrate_layers(poses: wp.array(dtype=wp.transform), motion: wp.array(dtype
                      contacts: wp.array(dtype=int), layers: wp.array(dtype=int),
                      heights: wp.array3d(dtype=float), free: wp.array3d(dtype=int),
                      clearance: wp.array3d(dtype=float), origin: wp.vec2, cell: float,
-                     ride_height: float, seam_tolerance: float,
-                     dt: float, mass: float, length: float, width: float, wheelbase: float,
-                     friction: float, stiffness: float, drag: float, max_acceleration: float,
-                     max_braking: float, steering_rate: float, speed_gain: float, substeps: int):
+                     ride_height: float, seam_tolerance: float, params: BicycleParams, substeps: int):
     i = wp.tid()
     pose = poses[i]
     state = motion[i]
@@ -102,9 +99,7 @@ def integrate_layers(poses: wp.array(dtype=wp.transform), motion: wp.array(dtype
     spacing = .05
     for _ in range(substeps):
         next_pose, state, control, velocity, unused = bicycle_step(
-            pose, state, command, control, dt, mass, length, width, wheelbase,
-            friction, stiffness, drag, max_acceleration, max_braking, steering_rate, speed_gain,
-            0.0, 0.0, 2, wp.vec4(), 0.0)
+            pose, state, command, control, params, 0.0, 0.0, 2, wp.vec4(), 0.0)
         a, b = wp.transform_get_translation(pose), wp.transform_get_translation(next_pose)
         hit = 0
         if wp.isfinite(b[0]) and wp.isfinite(b[1]):
@@ -113,8 +108,8 @@ def integrate_layers(poses: wp.array(dtype=wp.transform), motion: wp.array(dtype
             # is allowed, so a car touching a wall can still steer away.
             forward = wp.quat_rotate(wp.transform_get_rotation(pose), wp.vec3(1.0, 0.0, 0.0))
             before = box_clearance(clearance, layer, origin, cell, a, wp.atan2(forward[1], forward[0]),
-                                   length, width, spacing)
-            after = box_clearance(clearance, layer, origin, cell, b, state[3], length, width, spacing)
+                                   params.length, params.width, spacing)
+            after = box_clearance(clearance, layer, origin, cell, b, state[3], params.length, params.width, spacing)
             pad = .5 * spacing + .5 * wp.length(wp.vec2(b[0] - a[0], b[1] - a[1]))
             if after <= pad and after <= before:
                 hit = 1
@@ -140,7 +135,7 @@ def integrate_layers(poses: wp.array(dtype=wp.transform), motion: wp.array(dtype
             z = layer_height(heights, layer, origin, cell, b[0], b[1]) + ride_height * wp.sqrt(1.0 + gx * gx + gy * gy)
             pose = wp.transform(wp.vec3(b[0], b[1], z), surface_rotation(heading, gx, gy))
             linear = wp.spatial_top(velocity)
-            velocity = wp.spatial_vector(wp.vec3(linear[0], linear[1], (z - a[2]) / dt), wp.spatial_bottom(velocity))
+            velocity = wp.spatial_vector(wp.vec3(linear[0], linear[1], (z - a[2]) / params.dt), wp.spatial_bottom(velocity))
         count += hit
     poses[i] = pose
     motion[i] = state

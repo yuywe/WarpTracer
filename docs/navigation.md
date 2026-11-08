@@ -11,7 +11,7 @@ and otherwise CPU. Run `uv run warptracer view outputs/disparity.npz` for native
 playback on your GPU machine, or add `--video` to the demo for Colab. The NPZ retains poses, applied controls and scans; the JSON records
 controller settings and `wall_contact_substeps`. This counter counts every
 physics substep touching a wall, including contacts inside a fused transition.
-It is not a count of distinct crashes. Newton currently reports no such counter.
+It is not a count of distinct crashes.
 
 ## Controller
 
@@ -26,8 +26,10 @@ Speed decreases with steering and forward clearance. Braking uses the existing
 speed controller and tire grip limits; steering keeps its existing rate limit.
 The braking allowance also checks the selected target's filtered distance,
 accounting for the sensor position and half the chassis length.
-Invalid or near-clipped readings are conservatively treated as blocked. The
-sensor's validity mask does not distinguish a miss from a near-clipped obstacle.
+Rays with no return count as open out to the range cap, since a ray can clear a
+low wall and hit nothing. The sensor's validity mask does not distinguish a miss
+from a near-clipped obstacle, so an obstacle nearer than the sensor minimum also
+reads as open. A scan with no returns at all stops the car.
 
 Smooth room corners may have no range disparity. An additional corner rule starts
 a turn before clearance drops below a turning-diameter allowance, including
@@ -70,7 +72,7 @@ commands and controller state and cannot see the other cars.
 
 The demo and benchmark presets use 60 Hz sensing/control. At 40 Hz, use
 `--lidar-hz 40 --record-fps 20` for the demo. Duration and recording intervals
-must contain whole transitions, each with an even number of physics substeps.
+must contain whole transitions.
 
 ```python
 from warptracer.disparity import DisparityConfig
@@ -78,7 +80,7 @@ from warptracer.execution import TransitionRunner
 from warptracer.lidar import LidarConfig
 from warptracer.simulation import Simulation
 
-sim = Simulation(scenario="drive", engine="lean", device="cuda:0", num_envs=256,
+sim = Simulation(scenario="drive", device="cuda:0", num_envs=256,
                  lidar=LidarConfig(beams=108, frequency=60))
 runner = TransitionRunner(sim, backend="graph", integrator="fused", substeps=4,
                           controller="disparity",

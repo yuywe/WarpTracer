@@ -13,7 +13,7 @@ DEVICES = ["cpu", pytest.param("cuda:0", marks=pytest.mark.skipif(
 
 
 def car(n=1, device="cpu", hz=60):
-    return Simulation(scenario="drive", engine="lean", device=device, num_envs=n,
+    return Simulation(scenario="drive", device=device, num_envs=n,
                       lidar=LidarConfig(frequency=hz))
 
 
@@ -52,6 +52,22 @@ def test_scan_controls_turn_direction_and_invalid_scans_stop(device):
     sim.lidar.result.valid.zero_()
     controller.update()
     np.testing.assert_array_equal(sim.device_commands.numpy()[:, 3], 0)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_missed_rays_count_as_open_space(device):
+    sim = car(1, device)
+    controller = DisparityController(sim)
+    angles = np.linspace(-135, 135, 108)
+    values = np.full((1, 108), 4., np.float32)
+    valid = np.ones_like(values, dtype=np.int32)
+    missed = (angles > 34) & (angles < 45)
+    values[0, missed], valid[0, missed] = sim.lidar.config.far, 0
+    sim.lidar.result.values.assign(values)
+    sim.lidar.result.valid.assign(valid)
+    controller.update()
+    assert sim.device_commands.numpy()[0, 3] > 0
+    assert controller.filtered.numpy()[0, missed].max() == controller.config.range_cap
 
 
 @pytest.mark.parametrize("hz", [30, 40, 60])
@@ -113,9 +129,9 @@ def test_brakes_before_front_wall_and_contact_counter_resets():
 
 def test_unsupported_sensor_and_parameters_rejected():
     with pytest.raises(ValueError, match="LiDAR"):
-        DisparityController(Simulation(scenario="drive", engine="lean", device="cpu"))
+        DisparityController(Simulation(scenario="drive", device="cpu"))
     with pytest.raises(ValueError, match="unrotated"):
-        DisparityController(Simulation(scenario="drive", engine="lean", device="cpu",
+        DisparityController(Simulation(scenario="drive", device="cpu",
                                        lidar=LidarConfig(mount_rpy=(0, 0, .2))))
     with pytest.raises(ValueError):
         DisparityConfig(max_speed=float("nan"))

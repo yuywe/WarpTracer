@@ -1,18 +1,17 @@
-"""Fixed-step lean/Newton physics, independent of display and recording libraries."""
+"""Fixed-step lean physics, independent of display and recording libraries."""
 from dataclasses import asdict, dataclass
 import time
-from types import SimpleNamespace
 
 import numpy as np
 import warp as wp
 
-from .scene import Track, Vehicle, build_model
+from .scene import Track, Vehicle
 from .terrain import OvalTrack
 from .maps import MapTrack, track_state
 from .layers import LayeredTrack, SEAM_TOLERANCE
-from .driving import DRIVING_SCENARIOS, DriveConfig, apply_tire_forces, scripted_driver, write_command
+from .driving import DRIVING_SCENARIOS, DriveConfig, scripted_driver, write_command
 from .lidar import LidarRecording, MountedLidar
-from .lean import LeanState, integrate_bicycle, integrate_bicycle_fused
+from .lean import LeanState, bicycle_params, integrate_bicycle
 
 
 @dataclass
@@ -26,119 +25,89 @@ class Trajectory:
 
 
 class Simulation:
-    def __init__(self, track=None, vehicle=None, scenario="drop", device=None, physics_hz=240, drive=None, lidar=None, engine="newton", num_envs=1):
-        if not isinstance(physics_hz, int) or physics_hz <= 0:
-            raise ValueError("physics_hz must be a positive integer")
+    def __init__(self, track=None, vehicle=None, scenario="drive", device=None, physics_hz=240, drive=None, lidar=None, num_envs=1):
+        if not isinstance(physics_hz, int) or physics_hz < 120:
+            raise ValueError("physics_hz must be an integer >= 120")
         if lidar is not None and physics_hz % lidar.frequency:
             raise ValueError("LiDAR frequency must divide physics_hz")
-        if engine not in ("newton", "lean"):
-            raise ValueError("engine must be newton or lean")
-        if engine == "lean" and scenario not in DRIVING_SCENARIOS:
-            raise ValueError("Lean physics supports driving scenarios; drop/impact need Newton")
+        if scenario not in DRIVING_SCENARIOS:
+            raise ValueError(f"scenario must be one of {DRIVING_SCENARIOS}")
         if not isinstance(num_envs, int) or num_envs < 1:
             raise ValueError("num_envs must be a positive integer")
-        if engine == "newton" and num_envs != 1:
-            raise ValueError("Batched environments require lean physics")
         self.num_envs = num_envs
-        self.engine = engine
-        self.driving = scenario in DRIVING_SCENARIOS
-        default_track = Track(length=8, width=8) if scenario == "circle" else Track(length=12, width=6)
-        self.track = track or (default_track if self.driving else Track())
+        self.track = track or (Track(length=8, width=8) if scenario == "circle" else Track(length=12, width=6))
         self.vehicle = vehicle or Vehicle()
         self.drive = drive or DriveConfig()
         self.oval = isinstance(self.track, OvalTrack)
         self.png_map = isinstance(self.track, MapTrack)
         self.layered = isinstance(self.track, LayeredTrack)
-        if (self.oval or self.png_map or self.layered) and engine != "lean":
-            raise ValueError("Oval/PNG/layered road following requires lean physics")
         self.road_parameters = (wp.vec4(self.track.lane_width, self.track.elevation,
                                        self.track.frequency, self.drive.ride_height(self.vehicle))
                                 if self.oval else wp.vec4())
         self.wall_padding = (self.track.length / 2 * (1 - np.cos(np.pi / self.track.segments))
                              + self.vehicle.height * self.track.elevation * self.track.frequency / 4
                              if self.oval else 0.0)
-        if self.driving:
-            self.drive.validate_vehicle(self.vehicle)
-            if physics_hz < 120:
-                raise ValueError("Driving requires physics_hz >= 120")
+        self.drive.validate_vehicle(self.vehicle)
         self.scenario, self.physics_hz = scenario, physics_hz
         self.dt = 1.0 / physics_hz
-        if engine == "newton":
-            import newton
-            self.model, self.body, self.initial_velocity = build_model(self.track, self.vehicle, scenario, device, self.drive)
-            self.solver = newton.solvers.SolverXPBD(self.model, iterations=8, angular_damping=0.05)
-            self.pipeline = newton.CollisionPipeline(self.model)
-            self.contacts = self.pipeline.contacts()
-            self.control = self.model.control()
-            self.state, self.next_state = self.model.state(), self.model.state()
-        else:
-            wp.init()
-            chosen_device = wp.get_device(device or ("cuda:0" if wp.is_cuda_available() else "cpu"))
-            if min(self.track.length, self.track.width) <= np.hypot(self.vehicle.length, self.vehicle.width):
-                raise ValueError("Lean enclosure must accommodate the car at all headings")
-            self.model = SimpleNamespace(device=chosen_device)
-            self.body = 0
-            self.state, self.next_state = LeanState(chosen_device, num_envs), LeanState(chosen_device, num_envs)
-            x = -self.track.length / 3 if scenario in ("accelerate-brake", "s-turn") else 0.0
-            y = -min(1.3, self.track.width / 4) if scenario == "circle" else 0.0
-            # Keep the full chassis inside small enclosures, with clearance so
-            # the first stationary step does not count as a wall contact.
-            limit_x = (self.track.length - self.vehicle.length) / 2
-            limit_y = (self.track.width - self.vehicle.width) / 2
-            x = float(np.clip(x, -0.99 * limit_x, 0.99 * limit_x))
-            y = float(np.clip(y, -0.99 * limit_y, 0.99 * limit_y))
-            self.initial_pose = np.array([[x, y, self.drive.ride_height(self.vehicle), 0, 0, 0, 1]], dtype=np.float32)
-            if self.oval:
-                padding = self.wall_padding
-                radius = np.hypot(self.vehicle.length, self.vehicle.width) / 2 + padding
-                a, b = self.track.length / 2, self.track.width / 2
-                ia, ib = self.track.inner_axes
-                if radius * (a / b + ia / ib) >= self.track.lane_width:
-                    raise ValueError("Oval lane must accommodate the car's conservative footprint")
-                self.initial_pose = self.track.pose(-np.pi / 2, self.drive.ride_height(self.vehicle))[None]
-            if self.png_map:
-                self.track.validate_vehicle(self.vehicle)
-                self.initial_pose = self.track.path(self.drive.ride_height(self.vehicle))[:1]
-                self.map_clearance = wp.array(self.track.clearance, dtype=float, device=chosen_device)
-            if self.layered:
-                self.track.validate_vehicle(self.vehicle)
-                self.initial_pose = self.track.path(self.drive.ride_height(self.vehicle))[:1]
-                self.layer_heights = wp.array(self.track.heights, dtype=float, device=chosen_device)
-                self.layer_free = wp.array(self.track.free.astype(np.int32), dtype=int, device=chosen_device)
-                self.layer_clearance = wp.array(self.track.clearance, dtype=float, device=chosen_device)
-                self.initial_layers = np.full(num_envs, self.track.route_layers[0], np.int32)
-                self.layers = wp.zeros(num_envs, dtype=int, device=chosen_device)
-            self.initial_pose = np.repeat(self.initial_pose, num_envs, axis=0)
-            self.lean_motion = wp.zeros(num_envs, dtype=wp.vec4, device=chosen_device)
-            self.collision = wp.zeros(num_envs, dtype=int, device=chosen_device)
-            self.wall_contact_substeps = wp.zeros(num_envs, dtype=int, device=chosen_device)
-        self.device_commands = wp.zeros(num_envs, dtype=wp.vec4, device=self.model.device)
+        self.params = bicycle_params(self.vehicle, self.drive, self.dt)
+        wp.init()
+        self.device = wp.get_device(device or ("cuda:0" if wp.is_cuda_available() else "cpu"))
+        if min(self.track.length, self.track.width) <= np.hypot(self.vehicle.length, self.vehicle.width):
+            raise ValueError("Enclosure must accommodate the car at all headings")
+        self.state = LeanState(self.device, num_envs)
+        x = -self.track.length / 3 if scenario in ("accelerate-brake", "s-turn") else 0.0
+        y = -min(1.3, self.track.width / 4) if scenario == "circle" else 0.0
+        # Keep the full chassis inside small enclosures, with clearance so
+        # the first stationary step does not count as a wall contact.
+        limit_x = (self.track.length - self.vehicle.length) / 2
+        limit_y = (self.track.width - self.vehicle.width) / 2
+        x = float(np.clip(x, -0.99 * limit_x, 0.99 * limit_x))
+        y = float(np.clip(y, -0.99 * limit_y, 0.99 * limit_y))
+        self.initial_pose = np.array([[x, y, self.drive.ride_height(self.vehicle), 0, 0, 0, 1]], dtype=np.float32)
+        if self.oval:
+            padding = self.wall_padding
+            radius = np.hypot(self.vehicle.length, self.vehicle.width) / 2 + padding
+            a, b = self.track.length / 2, self.track.width / 2
+            ia, ib = self.track.inner_axes
+            if radius * (a / b + ia / ib) >= self.track.lane_width:
+                raise ValueError("Oval lane must accommodate the car's conservative footprint")
+            self.initial_pose = self.track.pose(-np.pi / 2, self.drive.ride_height(self.vehicle))[None]
+        if self.png_map:
+            self.track.validate_vehicle(self.vehicle)
+            self.initial_pose = self.track.path(self.drive.ride_height(self.vehicle))[:1]
+            self.map_clearance = wp.array(self.track.clearance, dtype=float, device=self.device)
+        if self.layered:
+            self.track.validate_vehicle(self.vehicle)
+            self.initial_pose = self.track.path(self.drive.ride_height(self.vehicle))[:1]
+            self.layer_heights = wp.array(self.track.heights, dtype=float, device=self.device)
+            self.layer_free = wp.array(self.track.free.astype(np.int32), dtype=int, device=self.device)
+            self.layer_clearance = wp.array(self.track.clearance, dtype=float, device=self.device)
+            self.initial_layers = np.full(num_envs, self.track.route_layers[0], np.int32)
+            self.layers = wp.zeros(num_envs, dtype=int, device=self.device)
+        self.initial_pose = np.repeat(self.initial_pose, num_envs, axis=0)
+        self.lean_motion = wp.zeros(num_envs, dtype=wp.vec4, device=self.device)
+        self.collision = wp.zeros(num_envs, dtype=int, device=self.device)
+        self.wall_contact_substeps = wp.zeros(num_envs, dtype=int, device=self.device)
+        self.device_commands = wp.zeros(num_envs, dtype=wp.vec4, device=self.device)
         self._uploaded_command = None
-        self.applied_controls = wp.zeros(num_envs, dtype=wp.vec3, device=self.model.device)
-        self.lidar = MountedLidar(self.track, self.vehicle, lidar, self.model.device, batch_size=num_envs) if lidar is not None else None
+        self.applied_controls = wp.zeros(num_envs, dtype=wp.vec3, device=self.device)
+        self.lidar = MountedLidar(self.track, self.vehicle, lidar, self.device, batch_size=num_envs) if lidar is not None else None
         self.lidar_stride = physics_hz // lidar.frequency if lidar is not None else 0
         self.reset()
 
     def reset(self):
-        if self.engine == "newton":
-            import newton
-            for state in (self.state, self.next_state):
-                newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, state)
-                state.body_qd.assign(self.initial_velocity[None])
-                state.clear_forces()
-        else:
-            for state in (self.state, self.next_state):
-                state.body_q.assign(self.initial_pose)
-                state.body_qd.zero_()
-            motion = np.zeros((self.num_envs, 4), np.float32)
-            # Initial headings can differ, including tilted centerline spawns.
-            qx, qy, qz, qw = self.initial_pose[:, 3:].T
-            motion[:, 3] = np.arctan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
-            self.lean_motion.assign(motion)
-            self.collision.zero_()
-            self.wall_contact_substeps.zero_()
-            if self.layered:
-                self.layers.assign(self.initial_layers)
+        self.state.body_q.assign(self.initial_pose)
+        self.state.body_qd.zero_()
+        motion = np.zeros((self.num_envs, 4), np.float32)
+        # Initial headings can differ, including tilted centerline spawns.
+        qx, qy, qz, qw = self.initial_pose[:, 3:].T
+        motion[:, 3] = np.arctan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
+        self.lean_motion.assign(motion)
+        self.collision.zero_()
+        self.wall_contact_substeps.zero_()
+        if self.layered:
+            self.layers.assign(self.initial_layers)
         self.steps = 0
         self.command = (0.0, 0.0, 0.0)
         self.target_speed = -1.0
@@ -147,12 +116,10 @@ class Simulation:
         self._upload_command()
         if self.lidar is not None:
             self.lidar.reset_statistics()
-            self.lidar.update(self.state, self.body, 0.0)
+            self.lidar.update(self.state, 0.0)
 
     def set_action(self, throttle=0.0, brake=0.0, steering=0.0):
         """Forward throttle/brake in [0,1], steering in radians. Brake takes priority."""
-        if not self.driving:
-            raise ValueError("Use a driving scenario to apply vehicle controls")
         if not np.isfinite((throttle, brake, steering)).all():
             raise ValueError("Controls must be finite")
         self.command = (float(np.clip(throttle, 0, 1)), float(np.clip(brake, 0, 1)),
@@ -164,8 +131,8 @@ class Simulation:
         """Optional proportional controller; nonnegative target speed in m/s."""
         if not np.isfinite(speed) or speed < 0:
             raise ValueError("Target speed must be finite and nonnegative")
-        if not self.driving or not np.isfinite(steering):
-            raise ValueError("A driving scenario and finite steering are required")
+        if not np.isfinite(steering):
+            raise ValueError("Steering must be finite")
         self.command = (0.0, 0.0, float(np.clip(steering, -self.drive.max_steering, self.drive.max_steering)))
         self.target_speed = float(speed)
         self._upload_command()
@@ -174,7 +141,7 @@ class Simulation:
         payload = (*self.command, self.target_speed)
         if payload != self._uploaded_command:
             wp.launch(write_command, dim=self.num_envs, inputs=[self.device_commands, wp.vec4(*payload)],
-                      device=self.model.device)
+                      device=self.device)
             self._uploaded_command = payload
 
     def set_commands(self, commands):
@@ -186,8 +153,8 @@ class Simulation:
         and invalidate_command_cache() before calling scalar setters again.
         """
         values = np.array(commands, dtype=np.float32, copy=True)
-        if not self.driving or values.shape != (self.num_envs, 4) or not np.isfinite(values).all():
-            raise ValueError("Commands must be finite (num_envs, 4) in a driving scenario")
+        if values.shape != (self.num_envs, 4) or not np.isfinite(values).all():
+            raise ValueError("Commands must be finite with shape (num_envs, 4)")
         if np.any((values[:, 3] < 0) & (values[:, 3] != -1)):
             raise ValueError("Target speeds must be -1 (manual) or nonnegative")
         values[:, :2] = np.clip(values[:, :2], 0, 1)
@@ -198,89 +165,34 @@ class Simulation:
     def invalidate_command_cache(self):
         self._uploaded_command = None
 
-    def _lean_inputs(self):
-        d, v = self.drive, self.vehicle
-        return [
-            self.state.body_q, self.lean_motion, self.device_commands,
-            self.applied_controls, self.collision, self.next_state.body_q, self.next_state.body_qd,
-            self.wall_contact_substeps,
-            self.dt, v.mass, v.length, v.width, d.wheelbase, v.friction, d.lateral_stiffness,
-            d.rolling_drag, d.max_acceleration, d.max_braking, d.steering_rate, d.speed_gain,
-            self.track.length, self.track.width,
-            int(self.oval), self.road_parameters, self.wall_padding,
-        ]
-
-    def _fused_physics_steps(self, substeps):
+    def _integrate(self, substeps):
+        """Advance physics in place inside one capture-safe kernel launch."""
+        state = [self.state.body_q, self.lean_motion, self.device_commands, self.applied_controls,
+                 self.collision, self.state.body_qd, self.wall_contact_substeps]
         if self.png_map:
-            self._map_physics_steps(substeps)
-            return
-        if self.layered:
-            self._layer_physics_steps(substeps)
-            return
-        inputs = self._lean_inputs()
-        # In-place output keeps the same pointers across every graph replay.
-        inputs[5], inputs[6] = self.state.body_q, self.state.body_qd
-        wp.launch(integrate_bicycle_fused, dim=self.num_envs, inputs=inputs + [substeps],
-                  device=self.model.device)
-
-    def _map_physics_steps(self, substeps):
-        from .map_kernels import integrate_map
-        d, v = self.drive, self.vehicle
-        wp.launch(integrate_map, dim=self.num_envs, inputs=[self.state.body_q, self.lean_motion,
-            self.device_commands, self.applied_controls, self.collision, self.state.body_qd,
-            self.wall_contact_substeps, self.map_clearance, wp.vec2(*self.track.origin), self.track.resolution,
-            self.dt, v.mass, v.length, v.width, d.wheelbase, v.friction, d.lateral_stiffness,
-            d.rolling_drag, d.max_acceleration, d.max_braking, d.steering_rate, d.speed_gain, substeps],
-            device=self.model.device)
-
-    def _layer_physics_steps(self, substeps):
-        from .layer_kernels import integrate_layers
-        d, v = self.drive, self.vehicle
-        wp.launch(integrate_layers, dim=self.num_envs, inputs=[self.state.body_q, self.lean_motion,
-            self.device_commands, self.applied_controls, self.collision, self.state.body_qd,
-            self.wall_contact_substeps, self.layers, self.layer_heights, self.layer_free, self.layer_clearance,
-            wp.vec2(*self.track.origin), self.track.resolution, d.ride_height(v), SEAM_TOLERANCE,
-            self.dt, v.mass, v.length, v.width, d.wheelbase, v.friction, d.lateral_stiffness,
-            d.rolling_drag, d.max_acceleration, d.max_braking, d.steering_rate, d.speed_gain, substeps],
-            device=self.model.device)
-
-    def _physics_step(self):
-        """One capture-safe substep; callers manage time and sensor scheduling."""
-        if self.engine == "lean":
-            if self.png_map:
-                self._map_physics_steps(1)
-                return
-            if self.layered:
-                self._layer_physics_steps(1)
-                return
-            wp.launch(integrate_bicycle, dim=self.num_envs, inputs=self._lean_inputs(),
-                      device=self.model.device)
-            self.state, self.next_state = self.next_state, self.state
-            return
-        self.state.clear_forces()
-        if self.driving:
-            d, v = self.drive, self.vehicle
-            wp.launch(apply_tire_forces, dim=1, inputs=[
-                self.state.body_q, self.state.body_qd, self.state.body_f, self.applied_controls,
-                self.body, self.device_commands, self.dt, v.mass, v.height,
-                v.friction, d.wheelbase, d.track_width, d.support_length, d.spring_stiffness,
-                d.spring_damping, d.lateral_stiffness, d.rolling_drag, d.max_acceleration,
-                d.max_braking, d.steering_rate, d.speed_gain,
-            ], device=self.model.device)
-        self.pipeline.collide(self.state, self.contacts)
-        self.solver.step(self.state, self.next_state, self.control, self.contacts, self.dt)
-        self.state, self.next_state = self.next_state, self.state
+            from .map_kernels import integrate_map
+            kernel, track = integrate_map, [self.map_clearance, wp.vec2(*self.track.origin), self.track.resolution,
+                                            self.params]
+        elif self.layered:
+            from .layer_kernels import integrate_layers
+            kernel, track = integrate_layers, [self.layers, self.layer_heights, self.layer_free, self.layer_clearance,
+                                               wp.vec2(*self.track.origin), self.track.resolution,
+                                               self.drive.ride_height(self.vehicle), SEAM_TOLERANCE, self.params]
+        else:
+            kernel, track = integrate_bicycle, [self.params, self.track.length, self.track.width, int(self.oval),
+                                                self.road_parameters, self.wall_padding]
+        wp.launch(kernel, dim=self.num_envs, inputs=state + track + [substeps], device=self.device)
 
     def step(self):
-        self._physics_step()
+        self._integrate(1)
         self.steps += 1
         if self.lidar is not None and self.steps % self.lidar_stride == 0:
-            self.lidar.update(self.state, self.body, self.steps * self.dt)
+            self.lidar.update(self.state, self.steps * self.dt)
 
     def snapshot(self):
         q, qd = self.state.body_q.numpy(), self.state.body_qd.numpy()
         if self.num_envs == 1:
-            return q[self.body].copy(), qd[self.body].copy()
+            return q[0].copy(), qd[0].copy()
         return q.copy(), qd.copy()
 
     def run(self, duration=4.0, record_fps=30, record=True, controller=None, runner=None):
@@ -307,7 +219,7 @@ class Simulation:
         reset()
         for _ in range(2):
             advance()
-        wp.synchronize_device(self.model.device)
+        wp.synchronize_device(self.device)
         reset()
         poses, velocities, actions = [], [], []
         controller = controller or scripted_driver
@@ -340,7 +252,7 @@ class Simulation:
                 sample_lidar()
             if record and i % stride == 0:
                 sample()
-        wp.synchronize_device(self.model.device)
+        wp.synchronize_device(self.device)
         elapsed = time.perf_counter() - start
         if times[-1] < total_steps * self.dt:
             sample()
@@ -354,14 +266,14 @@ class Simulation:
         if not np.isfinite(poses).all() or not np.isfinite(velocities).all():
             raise RuntimeError("Simulation produced non-finite state")
         metadata = {
-            "engine": self.engine, "scenario": self.scenario, "device": str(self.model.device),
+            "scenario": self.scenario, "device": str(self.device),
             "physics_hz": self.physics_hz, "record_fps": record_fps if record else 0,
             "simulated_seconds": total_steps * self.dt, "elapsed_seconds": elapsed,
             "steps_per_second": total_steps / elapsed,
             "timing_includes_pose_recording": record,
             "track": track_state(self.track), "vehicle": asdict(self.vehicle),
             "track_kind": "png" if self.png_map else "layered" if self.layered else ("oval" if self.oval else "room"),
-            "drive": asdict(self.drive) if self.driving else None,
+            "drive": asdict(self.drive),
             "lidar": ({**asdict(self.lidar.config), "mount_position": self.lidar.mount_position,
                        "algorithm": self.lidar.algorithm, "march_diagnostics": self.lidar.diagnostics(),
                        "frame": "X forward, Y left, Z up", "pose_layout": "x,y,z,qx,qy,qz,qw",
@@ -371,7 +283,7 @@ class Simulation:
             "controller": runner.controller if runner is not None else "callback",
             "backend": runner.backend if runner is not None else "eager",
             "integrator": runner.integrator if runner is not None else "unfused",
-            "wall_contact_substeps": int(self.wall_contact_substeps.numpy()[0]) if self.engine == "lean" else None,
+            "wall_contact_substeps": int(self.wall_contact_substeps.numpy()[0]),
             "pose_layout": "x,y,z,qx,qy,qz,qw",
             "velocity_layout": "vx,vy,vz,wx,wy,wz",
         }

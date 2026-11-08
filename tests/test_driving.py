@@ -1,4 +1,4 @@
-"""Behavior checks for the force-based box vehicle, independent of the viewer."""
+"""Behavior checks for the box vehicle, independent of the viewer."""
 import numpy as np
 import pytest
 import warp as wp
@@ -65,21 +65,6 @@ def test_no_grip_means_no_propulsion():
     sim = Simulation(scenario="drive", vehicle=Vehicle(friction=0), device="cpu")
     tr = sim.run(.5, controller=lambda sim, t: sim.set_action(throttle=1, steering=.3))
     assert np.max(np.linalg.norm(tr.velocities[:, :2], axis=1)) < 1e-5
-
-
-def test_airborne_tires_cannot_accelerate_or_steer():
-    sim = Simulation(scenario="drive", device="cpu")
-    pose = sim.state.body_q.numpy()
-    pose[0, 2] = 2.0
-    sim.state.body_q.assign(pose)
-    sim.set_action(throttle=1, steering=.3)
-    for _ in range(24):
-        sim.step()
-    q, velocity = sim.snapshot()
-    assert q[2] > 1.9
-    np.testing.assert_allclose(velocity[:2], 0, atol=1e-6)
-    np.testing.assert_allclose(velocity[3:], 0, atol=1e-6)
-    assert velocity[2] == pytest.approx(-.981, abs=.002)
 
 
 def test_controls_clamp_and_reject_invalid_values():

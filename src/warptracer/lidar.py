@@ -26,15 +26,12 @@ class LidarConfig:
     mount_rpy: tuple = (0.0, 0.0, 0.0)
     backend: str = "mesh"
     grid_cell_size: float = 0.025
-    grid_sample_cache: bool = False
 
     def __post_init__(self):
         if self.backend not in ("mesh", "grid"):
             raise ValueError("LiDAR backend must be mesh or grid")
         if not np.isfinite(self.grid_cell_size) or self.grid_cell_size <= 0:
             raise ValueError("Grid cell size must be finite and positive")
-        if not isinstance(self.grid_sample_cache, bool):
-            raise ValueError("Grid sample cache must be a boolean")
         if not isinstance(self.beams, int) or self.beams < 1:
             raise ValueError("LiDAR beams must be a positive integer")
         if not isinstance(self.frequency, int) or self.frequency < 1:
@@ -60,11 +57,11 @@ class LidarConfig:
 
 
 @wp.kernel
-def _mount_pose(body_q: wp.array(dtype=wp.transform), body: int, mount: wp.transform,
+def _mount_pose(body_q: wp.array(dtype=wp.transform), mount: wp.transform,
                 poses: wp.array(dtype=wp.transform), origins: wp.array(dtype=wp.vec3),
                 rotations: wp.array(dtype=wp.mat33)):
     i = wp.tid()
-    pose = wp.transform_multiply(body_q[body + i], mount)
+    pose = wp.transform_multiply(body_q[i], mount)
     poses[i] = pose
     origins[i] = wp.transform_get_translation(pose)
     rotations[i] = wp.quat_to_matrix(wp.transform_get_rotation(pose))
@@ -115,8 +112,7 @@ class MountedLidar:
                 center, half_size = np.asarray(position), np.asarray(dimensions) / 2
                 quads.extend(box(center - half_size, center + half_size))
             self.scene = from_quads(quads, device=device)
-        options = {"cache_samples": config.grid_sample_cache} if config.backend == "grid" else {}
-        self.sensor = self.scene.sensor(self.rays, batch_size=batch_size, near=config.near, far=config.far, **options)
+        self.sensor = self.scene.sensor(self.rays, batch_size=batch_size, near=config.near, far=config.far)
         self.poses = wp.empty(batch_size, dtype=wp.transform, device=device)
         self.timestamp = 0.0
 
@@ -136,10 +132,10 @@ class MountedLidar:
     def diagnostics(self):
         return self.sensor.diagnostics() if self.config.backend == "grid" else None
 
-    def update(self, state, body, timestamp, active=None):
+    def update(self, state, timestamp, active=None):
         if active is not None and self.config.backend != "grid":
             raise ValueError("Selected-car scans require grid LiDAR")
-        wp.launch(_mount_pose, dim=self.batch_size, inputs=[state.body_q, body, self.mount],
+        wp.launch(_mount_pose, dim=self.batch_size, inputs=[state.body_q, self.mount],
                   outputs=[self.poses, self.sensor.origins, self.sensor.rotations],
                   device=self.scene.device)
         if active is None:
