@@ -54,6 +54,22 @@ def test_scan_controls_turn_direction_and_invalid_scans_stop(device):
     np.testing.assert_array_equal(sim.device_commands.numpy()[:, 3], 0)
 
 
+@pytest.mark.parametrize("device", DEVICES)
+def test_missed_rays_count_as_open_space(device):
+    sim = car(1, device)
+    controller = DisparityController(sim)
+    angles = np.linspace(-135, 135, 108)
+    values = np.full((1, 108), 4., np.float32)
+    valid = np.ones_like(values, dtype=np.int32)
+    missed = (angles > 34) & (angles < 45)
+    values[0, missed], valid[0, missed] = sim.lidar.config.far, 0
+    sim.lidar.result.values.assign(values)
+    sim.lidar.result.valid.assign(valid)
+    controller.update()
+    assert sim.device_commands.numpy()[0, 3] > 0
+    assert controller.filtered.numpy()[0, missed].max() == controller.config.range_cap
+
+
 @pytest.mark.parametrize("hz", [30, 40, 60])
 def test_navigation_moves_and_turns_without_wall_contacts(hz):
     sim = car(hz=hz)

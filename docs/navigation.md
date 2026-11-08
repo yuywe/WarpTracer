@@ -26,8 +26,10 @@ Speed decreases with steering and forward clearance. Braking uses the existing
 speed controller and tire grip limits; steering keeps its existing rate limit.
 The braking allowance also checks the selected target's filtered distance,
 accounting for the sensor position and half the chassis length.
-Invalid or near-clipped readings are conservatively treated as blocked. The
-sensor's validity mask does not distinguish a miss from a near-clipped obstacle.
+Rays with no return count as open out to the range cap, since a ray can clear a
+low wall and hit nothing. The sensor's validity mask does not distinguish a miss
+from a near-clipped obstacle, so an obstacle nearer than the sensor minimum also
+reads as open. A scan with no returns at all stops the car.
 
 Smooth room corners may have no range disparity. An additional corner rule starts
 a turn before clearance drops below a turning-diameter allowance, including

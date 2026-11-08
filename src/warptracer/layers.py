@@ -153,31 +153,13 @@ class LayeredTrack:
         return _layer_mesh(self)
 
     def mesh(self):
-        """LiDAR geometry: replay parts inside a closed room (floor, walls, ceiling)
-        so every ray returns, as it would indoors. Replay omits the room."""
-        parts = list(self.mesh_parts().values()) + [self._room()]
+        """LiDAR geometry: the replay parts as one mesh. Rays that clear the walls return nothing."""
         vertices, faces, offset = [], [], 0
-        for v, f in parts:
+        for v, f in self.mesh_parts().values():
             vertices.append(v)
             faces.append(f + offset)
             offset += len(v)
         return np.concatenate(vertices), np.concatenate(faces)
-
-    def _room(self):
-        x0, y0 = self.origin
-        x1, y1 = x0 + self.length, y0 + self.width
-        z0, z1 = float(self.heights.min()) - .03, float(self.heights.max()) + 1.5
-        corners = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]])
-        vertices, faces = [], []
-        for a, b in zip(corners, np.roll(corners, -1, axis=0)):
-            base = len(vertices)
-            vertices += [[*a, z0], [*b, z0], [*b, z1], [*a, z1]]
-            faces += [[base, base + 1, base + 2], [base, base + 2, base + 3]]
-        for z in (z0, z1):
-            base = len(vertices)
-            vertices += [[*c, z] for c in corners]
-            faces += [[base, base + 1, base + 2], [base, base + 2, base + 3]]
-        return np.array(vertices, np.float32), np.array(faces, np.int32)
 
     def state_dict(self):
         state = {"kind": "layered", "name": self.name}

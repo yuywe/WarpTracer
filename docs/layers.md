@@ -36,8 +36,8 @@ decks. Every car carries an integer layer index.
   surfaces, 0.3 m walls along road edges (open at seams), solid embankment under
   the ramps, and a deck slab with an underside over the lower road. LiDAR uses
   the mesh backend (a single height field cannot represent an overhang; grid
-  LiDAR is rejected). For LiDAR only, the track sits inside a closed room so
-  rays climbing off the deck still return, as they would indoors.
+  LiDAR is rejected). Rays that clear the walls, such as those climbing off the
+  deck, return no hit.
 
 ## Figure-eight geometry
 
