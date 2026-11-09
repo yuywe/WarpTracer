@@ -13,6 +13,9 @@ from .terrain import OvalTrack
 from .maps import MapTrack
 from .layers import LayeredTrack
 
+# The real car's base_link (rear-axle center) to laser offset, as race_stack publishes it.
+REAL_CAR_MOUNT = (0.2733, 0.0, 0.096)
+
 
 @dataclass(frozen=True)
 class LidarConfig:
@@ -21,7 +24,7 @@ class LidarConfig:
     near: float = 0.021
     far: float = 30.0
     frequency: int = 30
-    # None places the sensor 2.5 cm above the chassis top, 12 cm forward of COM.
+    # None places the sensor at REAL_CAR_MOUNT from the rear axle, at chassis-center height.
     mount_position: tuple | None = None
     mount_rpy: tuple = (0.0, 0.0, 0.0)
     backend: str = "mesh"
@@ -87,11 +90,12 @@ class LidarRecording:
 
 class MountedLidar:
     """Reusable device-resident scanner; excludes the host vehicle."""
-    def __init__(self, track, vehicle, config, device, batch_size=1):
+    def __init__(self, track, vehicle, config, device, batch_size=1, wheelbase=0.32):
         self.batch_size = batch_size
         self.config = config
         self.rays = config.rays()
-        self.mount_position = config.mount_position or (0.12, 0.0, vehicle.height / 2 + 0.025)
+        x, y, z = REAL_CAR_MOUNT
+        self.mount_position = config.mount_position or (x - wheelbase / 2, y, z)
         self.mount = wp.transform(self.mount_position, wp.quat_rpy(*config.mount_rpy))
         if config.backend == "grid":
             if not isinstance(track, (OvalTrack, MapTrack)):
