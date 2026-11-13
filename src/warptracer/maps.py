@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 from scipy.ndimage import convolve, distance_transform_edt, gaussian_filter1d, label
+from scipy.spatial import cKDTree
 from skimage.morphology import skeletonize
 
 from .distance_field import DistanceField
@@ -196,6 +197,13 @@ class MapTrack:
                              f"{radius:.3f} m collision radius plus 0.02 m spawn margin. "
                              "Check meters per pixel, clean the PNG, or supply a safer centerline")
         return minimum
+
+    def route_progress(self, poses):
+        """Net laps along the route, from the nearest route sample to each recorded XY."""
+        index = cKDTree(self.route).query(np.asarray(poses)[:, :2])[1]
+        n = len(self.route)
+        steps = (np.diff(index) + n // 2) % n - n // 2
+        return float(steps.sum() / n)
 
     def path(self, ride_height):
         delta = np.roll(self.route, -1, axis=0) - np.roll(self.route, 1, axis=0)

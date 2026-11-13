@@ -278,3 +278,47 @@ def test_map_ppo_checkpoint_resume_and_evaluate_without_source_png(png_map, tmp_
     from warptracer.playback import load_recording
     recording, track, vehicle = load_recording(output / "evaluation.npz")
     assert track.name == "circuit" and recording.lidar.directions.shape == (108, 3)
+
+
+def test_route_progress_counts_laps_in_both_directions(png_map):
+    track = load_map(png_map[0])
+    loop = np.vstack([track.route, track.route, track.route[:1]])
+    assert track.route_progress(loop) == pytest.approx(2.0, abs=.01)
+    assert track.route_progress(loop[::-1]) == pytest.approx(-2.0, abs=.01)
+
+
+def _ring_map(tmp_path, radius=4.0, half_width=1.0, resolution=.05):
+    size = 2 * (radius + half_width + .5)
+    c = (np.arange(int(size / resolution)) + .5) * resolution - size / 2
+    x, y = np.meshgrid(c, c, indexing="ij")
+    free = np.abs(np.hypot(x, y) - radius) < half_width
+    Image.fromarray(np.flipud(free.T).astype(np.uint8) * 255).save(tmp_path / "ring.png")
+    config = tmp_path / "ring.json"
+    config.write_text(json.dumps({"image": "ring.png", "resolution": resolution, "origin": [-size / 2, -size / 2]}))
+    return config
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_disparity_laps_a_png_ring_clear_of_its_collision_circle(tmp_path, device):
+    # Disparity padding by half the car width hugs the inner wall closer than the
+    # map's enclosing collision circle, so the car used to stop within seconds.
+    from warptracer.execution import TransitionRunner
+    from warptracer.lidar import LidarConfig
+    from warptracer.simulation import Simulation
+    track = load_map(_ring_map(tmp_path))
+    sim = Simulation(track=track, scenario="drive", device=device, lidar=LidarConfig(frequency=60, backend="grid"))
+    runner = TransitionRunner(sim, controller="disparity", integrator="fused", substeps=sim.lidar_stride)
+    trajectory = sim.run(20.0, 30, runner=runner)
+    assert trajectory.metadata["wall_contact_substeps"] == 0
+    assert track.route_progress(trajectory.poses) > .5
+
+
+def test_demo_map_option_records_png_track(tmp_path):
+    from warptracer.cli import main
+    config = _ring_map(tmp_path)
+    main(["demo", "--map", str(config.with_suffix(".png")), "--seconds", ".2", "--output", str(tmp_path / "out")])
+    metadata = json.loads((tmp_path / "out/ring.json").read_text())
+    assert (tmp_path / "out/ring.npz").exists() and "lap_progress" in metadata
+    for argv in (["demo", "oval", "--map", str(config)], ["demo", "--map", str(config), "--lidar-backend", "mesh"]):
+        with pytest.raises(SystemExit):
+            main(argv)
