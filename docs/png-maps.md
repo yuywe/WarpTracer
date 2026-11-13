@@ -37,6 +37,20 @@ The checkpoint embeds the occupancy bitmap, route, scale and origin. Evaluation
 and resume restore that geometry even if the original PNG/JSON files are moved.
 Existing oval checkpoints remain supported. Resume cannot switch to a new map.
 
+## Record a disparity drive
+
+```bash
+uv run warptracer demo --map maps/wavy_ring.png
+```
+
+This drives the disparity controller on the map for 120 s with grid LiDAR and
+writes `outputs/<map name>.npz` and `.json`, including `lap_progress` along the
+route. `maps/wavy_ring.png` is a 20 x 20 m ring at 0.05 m/pixel whose centerline
+radius (6 m ± about 1.1 m) and lane width (1.6 to 2.4 m) vary with angle, so no
+two places look alike to a scan matcher; the controller laps it about 3.7 times
+in 120 s without wall contact. Maps with tight hairpins stop the controller; see
+[navigation](navigation.md).
+
 ## Colab
 
 Open [the PPO notebook](https://colab.research.google.com/github/yuywe/WarpTracer/blob/performance-prototype/notebooks/ppo_colab.ipynb).

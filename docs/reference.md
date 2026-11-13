@@ -15,7 +15,7 @@ second environment. Only LiDAR is instantiated; camera code is not used.
 | Beam layout | 108 beams in one horizontal ring, -135° to +135°, ordered right to left |
 | Range | 0.021 m minimum, 30 m maximum |
 | Rate | CLI demos/presets: 60 Hz; Python `LidarConfig()`: 30 Hz; independent of pose recording rate |
-| Mount translation | 0.12 m forward, centered laterally, 0.025 m above the chassis top |
+| Mount translation | The real car's 0.2733 m forward, 0.096 m up from the rear-axle center (`base_link`); with the 0.32 m wheelbase, 0.1133 m forward of and 0.096 m above the chassis center |
 | Mount orientation | Aligned with the chassis; follows its yaw, pitch, and roll |
 | Scanned surfaces | Room: walls/floor; oval: road and continuous barriers |
 | Host vehicle | Excluded from the ray-casting mesh |

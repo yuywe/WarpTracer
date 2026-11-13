@@ -72,7 +72,8 @@ def test_oval_navigation_completes_laps_with_height_and_tilt(hz):
     expected_normal /= np.linalg.norm(expected_normal, axis=1, keepdims=True)
     np.testing.assert_allclose(normal, expected_normal, atol=1e-6)
     np.testing.assert_allclose(np.linalg.norm(q[:, 3:], axis=1), 1, atol=1e-6)
-    assert trajectory.lidar.valid.all()
+    # Pitched on a descent, a few long rays clear the 1 m barriers' top and miss.
+    assert (~trajectory.lidar.valid).mean() < 1e-4
     # Mounted scanner inherits the body tilt, rather than staying world-horizontal.
     sample = 1
     sensor = trajectory.lidar.poses[sample]

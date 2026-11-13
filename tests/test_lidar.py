@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 import warp as wp
 
-from warptracer.lidar import LidarConfig
+from warptracer.lidar import REAL_CAR_MOUNT, LidarConfig
 from warptracer.scene import Track
 from warptracer.simulation import Simulation
 
@@ -43,18 +43,19 @@ def reference_scan(track, origin, directions, near, far):
 def test_known_wall_ranges_and_rotated_mount_offset():
     sim = Simulation(track=Track(), scenario="drive", device="cpu",
                      lidar=LidarConfig(beams=3, fov_degrees=180))
+    forward = sim.lidar.mount_position[0]
     pose, values, valid = sim.lidar.snapshot()
-    np.testing.assert_allclose(values, [2, 2.88, 2], atol=1e-5)
+    np.testing.assert_allclose(values, [2, 3 - forward, 2], atol=1e-5)
     assert valid.all()
-    np.testing.assert_allclose(pose[:2], [.12, 0], atol=1e-6)
+    np.testing.assert_allclose(pose[:2], [forward, 0], atol=1e-6)
     q = sim.state.body_q.numpy()
     q[0, :2] = [1, .3]
     q[0, 3:] = [0, 0, np.sqrt(.5), np.sqrt(.5)]
     sim.state.body_q.assign(q)
     sim.lidar.update(sim.state, 0)
     pose, values, valid = sim.lidar.snapshot()
-    np.testing.assert_allclose(pose[:2], [1, .42], atol=1e-6)
-    np.testing.assert_allclose(values, [2, 1.58, 4], atol=1e-5)
+    np.testing.assert_allclose(pose[:2], [1, .3 + forward], atol=1e-6)
+    np.testing.assert_allclose(values, [2, 1.7 - forward, 4], atol=1e-5)
     assert valid.all()
 
 
@@ -152,3 +153,9 @@ def test_cuda_mounted_scan_agrees_with_cpu():
         values.append(sim.lidar.snapshot())
     np.testing.assert_array_equal(values[0][2], values[1][2])
     np.testing.assert_allclose(values[0][1], values[1][1], atol=1e-4)
+
+
+def test_default_mount_matches_real_car_from_rear_axle():
+    sim = Simulation(device="cpu", lidar=LidarConfig())
+    rear_axle = np.array([-sim.drive.wheelbase / 2, 0, 0])
+    np.testing.assert_allclose(np.array(sim.lidar.mount_position) - rear_axle, REAL_CAR_MOUNT, atol=1e-12)

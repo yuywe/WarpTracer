@@ -92,7 +92,8 @@ class Simulation:
         self.device_commands = wp.zeros(num_envs, dtype=wp.vec4, device=self.device)
         self._uploaded_command = None
         self.applied_controls = wp.zeros(num_envs, dtype=wp.vec3, device=self.device)
-        self.lidar = MountedLidar(self.track, self.vehicle, lidar, self.device, batch_size=num_envs) if lidar is not None else None
+        self.lidar = MountedLidar(self.track, self.vehicle, lidar, self.device, batch_size=num_envs,
+                                  wheelbase=self.drive.wheelbase) if lidar is not None else None
         self.lidar_stride = physics_hz // lidar.frequency if lidar is not None else 0
         self.reset()
 

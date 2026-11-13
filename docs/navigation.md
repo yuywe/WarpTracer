@@ -53,6 +53,14 @@ Python config), instead of using ray bearing directly as steering. Targets still
 come entirely from LiDAR: there is no centerline-following controller or map
 input. The scanner stays aligned with the tilted chassis. See [track details](tracks.md).
 
+PNG maps (`uv run warptracer demo --map maps/wavy_ring.png`) use the same loop
+steering. Their collision is a circle enclosing the chassis (radius about
+0.29 m), so disparities are extended by that radius plus `safety_margin`
+instead of half the car width; otherwise the chosen ray grazes the inner wall
+closer than the collision circle allows. The controller laps smooth tracks such
+as `maps/wavy_ring.png`, but tight hairpins (IV_26, berlin, the F1 circuits)
+still stop it, because it cannot reverse.
+
 We also reviewed the controller in
 [uci-f1tenth/race_stack](https://github.com/uci-f1tenth/race_stack/blob/main/disparity_extender/disparity_extender/disparity_extender.py).
 Despite its name, that version selects the center of a sliding window with the

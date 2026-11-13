@@ -24,6 +24,7 @@ uv run warptracer demo oval --video         # render outputs/oval.mp4 offscreen 
 uv run warptracer demo oval --follow        # top-down camera tracking the car (optional altitude, default 20 m)
 uv run warptracer demo --seconds 60         # override one setting; see --help for the rest
 uv run warptracer demo bridge               # two-layer figure eight: under, then over a 0.7 m bridge
+uv run warptracer demo --map maps/wavy_ring.png  # disparity drive on a PNG map -> outputs/wavy_ring.npz
 uv run warptracer demo --help               # scenarios: oval, oval-grid, bridge, disparity, accelerate-brake,
                                             #   circle, s-turn
 

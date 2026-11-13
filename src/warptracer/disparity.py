@@ -13,6 +13,7 @@ import warp as wp
 wp.set_module_options({"enable_backward": False})
 from .terrain import OvalTrack
 from .layers import LayeredTrack
+from .maps import MapTrack
 
 
 @dataclass(frozen=True)
@@ -191,10 +192,13 @@ class DisparityController:
         sim, cfg = self.sim, self.config
         ranges, valid = sim.lidar.result.values, sim.lidar.result.valid
         beams = sim.lidar.config.beams
-        radius = sim.vehicle.width / 2 + cfg.safety_margin
+        # PNG maps collide with a circle enclosing the chassis, so clear that instead of half the width.
+        png_map = isinstance(sim.track, MapTrack)
+        body = np.hypot(sim.vehicle.length, sim.vehicle.width) / 2 if png_map else sim.vehicle.width / 2
+        radius = body + cfg.safety_margin
         cap = min(cfg.range_cap, sim.lidar.config.far)
         # Narrow closed roads skip the room corner latch and steer by lookahead.
-        loop = isinstance(sim.track, (OvalTrack, LayeredTrack))
+        loop = png_map or isinstance(sim.track, (OvalTrack, LayeredTrack))
         wp.launch(extend_disparities, dim=(sim.num_envs, beams), inputs=[
             ranges, valid, self.filtered, beams, self.increment, radius,
             cfg.disparity_threshold, cap], device=sim.device)
